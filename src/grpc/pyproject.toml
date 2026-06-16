@@ -6,7 +6,10 @@ build-backend = "hatchling.build"
 name = "alpasim_grpc"
 version = "0.54.0"
 description = "gRPC API definitions for Alpamayo Sim"
-requires-python = ">=3.11,<3.13"
+# Loosened to >=3.10 so the trafficsim container (Python 3.10, required by
+# autoware_carla_scenario / lanelet2-python-api-for-autoware) can consume
+# generated proto stubs.
+requires-python = ">=3.10,<3.13"
 dependencies = [
   "grpcio",
   "grpcio-tools",

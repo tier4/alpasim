@@ -1,0 +1,38 @@
+# @package _global_
+#
+# CARLA 0.9.16 + TrafficManager backed trafficsim service. Requires that the
+# physics container also runs the CARLA Server (use `physics=carla`).
+#
+# Usage:
+#   uv run alpasim_wizard ... \
+#     physics=carla \
+#     trafficsim=carla \
+#     trafficsim.scenario_file=town01_demo.yaml
+#
+# `scenario_file` is the basename of a Hydra YAML scenario living under
+# `${trafficsim.scenario_dir}` on the host. It is mounted into the container
+# at /mnt/scenarios and passed to trafficsim_server via `--scenario`.
+trafficsim:
+  enabled: true
+  scenario_dir: "${defines.filesystem}/scenarios"
+  scenario_file: ???
+
+services:
+  trafficsim:
+    image: ${defines.trafficsim_image}
+    dockerfile: trafficsim.Dockerfile
+    volumes:
+      - "${trafficsim.scenario_dir}:/mnt/scenarios"
+      - "${defines.trafficsim_map_cache}:/mnt/maps"
+      - "${repo-relative:'src'}:/repo/src"
+    environments:
+      - PYTHONUNBUFFERED=1
+    command:
+      - "uv run trafficsim_server"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--carla-host=physics-0"
+      - "--carla-port=2000"
+      - "--tm-port=8000"
+      - "--scenario=/mnt/scenarios/{scenario_file}"
+      - "--log-level=${wizard.log_level}"

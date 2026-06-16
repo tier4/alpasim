@@ -7,9 +7,10 @@ defaults:
   - driver: null # Must be overridden (e.g., driver=vavam, driver=alpamayo1)
   - driver_source: null # Optional: external_static or external_dynamic. Omit for managed drivers.
   - topology: null # Must be overridden (e.g., topology=1gpu)
-  - trafficsim: null # Optional override
+  - trafficsim: null # Optional override (e.g., trafficsim=carla)
   - controller: default # Defaults to linear MPC; override with controller=nonlinear etc.
   - renderer: null # Optional override
+  - physics: null # Optional override (e.g., physics=carla)
   - optional scenes_catalog: internal # auto-override when internal plugin installed
   - optional image_defaults: internal # auto-override when internal plugin installed
 
@@ -24,6 +25,8 @@ defines:
   driver_model: ???
   image_registry: ""
   base_image: "${defines.image_registry}alpasim-base:${repo-version:}"
+  physics_carla_image: "${defines.image_registry}alpasim-physics-carla:${repo-version:}"
+  trafficsim_image: "${defines.image_registry}alpasim-trafficsim:${repo-version:}"
   hf_cache: "${oc.env:HF_HOME,${oc.env:HOME}/.cache/huggingface}"
 
   # defaults will work out of the box \/
@@ -178,6 +181,9 @@ services:
       - "--log-level=${wizard.log_level}"
 
   trafficsim:
+    # Default to a noop placeholder so that runs without `trafficsim=carla`
+    # keep working. The `trafficsim=carla` profile (configs/trafficsim/carla.yaml)
+    # overrides image, volumes and command with the CARLA-backed service.
     image: ${defines.base_image}
     command:
       - "echo 'not yet included'"

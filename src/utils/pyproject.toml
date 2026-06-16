@@ -6,7 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "alpasim_utils"
 version = "0.52.0"
 description = "Utility functions for Alpamayo Sim"
-requires-python = ">=3.11,<3.13"
+# Loosened to >=3.10 so the trafficsim container (Python 3.10, required by
+# autoware_carla_scenario) can pull in pose / trajectory helpers.
+requires-python = ">=3.10,<3.13"
 dependencies = [
   "alpasim_grpc",
   "dataclasses-json>=0.6.7",

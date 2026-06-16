@@ -120,7 +120,7 @@ class DockerComposeDeployment:
         if not container.service_config.external_image:
             build_config: dict[str, Any] = {
                 "context": repo_root,
-                "dockerfile": "Dockerfile",
+                "dockerfile": container.service_config.dockerfile,
                 "tags": [container.service_config.image],
             }
             if _netrc_secret_file() is not None:
