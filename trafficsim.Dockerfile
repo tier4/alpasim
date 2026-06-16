@@ -6,7 +6,7 @@
 # workspace targets Python 3.11+.
 #
 # Build (from repo root):
-#   docker build -f docker/trafficsim.Dockerfile -t alpasim-trafficsim .
+#   docker build -f trafficsim.Dockerfile -t alpasim-trafficsim .
 
 FROM ubuntu:22.04
 
