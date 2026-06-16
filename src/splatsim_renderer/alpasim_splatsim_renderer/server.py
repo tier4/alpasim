@@ -65,7 +65,17 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         return sensorsim_pb2.LidarRenderReturn(num_points=0)
 
     def render_aggregated(self, request: sensorsim_pb2.AggregatedRenderRequest, context):
-        rgb_returns = [self.render_rgb(req, context) for req in request.rgb_requests]
+        # Isolate per-item failures so one bad camera doesn't cancel the rest
+        # of the aggregate. Mirrors batch_render_rgb's tolerance for partial
+        # success; clients see an empty result for failed slots and a logged
+        # exception, instead of an RPC-level abort.
+        rgb_returns: list[sensorsim_pb2.RGBRenderReturn] = []
+        for req in request.rgb_requests:
+            try:
+                rgb_returns.append(self.render_rgb(req, context))
+            except Exception:  # noqa: BLE001
+                logger.exception("render_aggregated: rgb sub-request failed")
+                rgb_returns.append(sensorsim_pb2.RGBRenderReturn())
         lidar_returns = [self.render_lidar(req, context) for req in request.lidar_requests]
         return sensorsim_pb2.AggregatedRenderReturn(
             rgb_returns=rgb_returns,
