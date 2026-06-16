@@ -153,7 +153,10 @@ class CameraRenderFlushEvent(Event):
         if not camera_triggers:
             return
 
-        # Both bundled-render methods share the (images, driver_data) return.
+        # batch_render returns (images, driver_data); aggregated_render returns
+        # (images, lidar_clouds, driver_data).  The starred unpack tolerates
+        # both shapes; lidar_clouds is currently empty because no LiDAR
+        # triggers are scheduled by this event yet (future PR).
         bundled_render = (
             self.sensorsim.batch_render
             if rollout_state.unbound.render_bundling == RenderBundling.BATCH_RENDER_RGB
@@ -167,7 +170,7 @@ class CameraRenderFlushEvent(Event):
             image_format=rollout_state.unbound.image_format,
             ego_mask_rig_config_id=rollout_state.unbound.ego_mask_rig_config_id,
         )
-        images_with_metadata, driver_data = await render_coro
+        images_with_metadata, *_lidar_clouds, driver_data = await render_coro
 
         for image in images_with_metadata:
             rollout_state.step_context.track_task(self.driver.submit_image(image))

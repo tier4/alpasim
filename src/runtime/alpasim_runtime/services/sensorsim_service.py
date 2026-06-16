@@ -9,6 +9,7 @@ import logging
 from asyncio import Lock
 from typing import Any, Dict, Type
 
+import numpy as np
 from alpasim_grpc.v0.common_pb2 import Empty
 from alpasim_grpc.v0.logging_pb2 import LogEntry
 from alpasim_grpc.v0.sensorsim_pb2 import (
@@ -23,6 +24,10 @@ from alpasim_grpc.v0.sensorsim_pb2 import (
     BatchRGBRenderReturnItem,
     DynamicObject,
     ImageFormat,
+    LidarDeviceType,
+    LidarRenderRequest,
+    LidarRenderReturn,
+    LidarSpec,
     PosePair,
     RGBRenderRequest,
     RGBRenderReturn,
@@ -35,7 +40,7 @@ from alpasim_runtime.services.session_configs import RendererSessionConfig
 from alpasim_runtime.telemetry.rpc_wrapper import profiled_rpc_call
 from alpasim_runtime.types import Clock, RuntimeCamera
 from alpasim_utils.geometry import Pose, Trajectory, pose_to_grpc
-from alpasim_utils.types import ImageWithMetadata
+from alpasim_utils.types import ImageWithMetadata, LidarPointCloudWithMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +309,157 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
             ego_mask_id=ego_mask_id,
         )
 
+    def construct_lidar_render_request(
+        self,
+        ego_trajectory: Trajectory,
+        traffic_trajectories: Dict[str, Trajectory],
+        lidar_type: LidarDeviceType,
+        sensor_pose_delta: Pose | None,
+        trigger: Clock.Trigger,
+        scene_id: str,
+    ) -> LidarRenderRequest:
+        """Construct a LidarRenderRequest for a single lidar trigger.
+
+        Mirrors ``construct_rgb_render_request`` but for lidar: interpolates
+        ego and traffic poses at ``trigger``'s time range and assembles the
+        request.  ``sensor_pose_delta`` is the lidar-mount transform applied
+        on top of the ego pose (analogous to ``rig_to_camera`` for RGB); pass
+        ``None`` if the lidar is colocated with the ego rig origin.
+
+        ``LidarRenderRequest`` does not carry a logical_id; callers that need
+        to correlate response items must track that out-of-band (mirroring
+        how ``BatchRGBRenderRequestItem.camera_name`` is paired externally).
+        """
+        start_us = trigger.time_range_us.start
+        end_us = trigger.time_range_us.stop
+
+        def trajectory_to_pose_pair(
+            trajectory: Trajectory, delta: Pose | None
+        ) -> PosePair:
+            start_pose = trajectory.interpolate_pose(start_us)
+            end_pose = trajectory.interpolate_pose(end_us)
+            if delta is not None:
+                start_pose = start_pose @ delta
+                end_pose = end_pose @ delta
+            return PosePair(
+                start_pose=pose_to_grpc(start_pose),
+                end_pose=pose_to_grpc(end_pose),
+            )
+
+        dynamic_objects = [
+            DynamicObject(
+                track_id=track_id,
+                pose_pair=trajectory_to_pose_pair(track_traj, delta=None),
+            )
+            for track_id, track_traj in traffic_trajectories.items()
+            if (
+                start_us in track_traj.time_range_us
+                and end_us in track_traj.time_range_us
+            )
+        ]
+
+        sensor_pose = trajectory_to_pose_pair(
+            ego_trajectory,
+            delta=sensor_pose_delta,
+        )
+
+        return LidarRenderRequest(
+            scene_id=scene_id,
+            lidar_config=LidarSpec(lidar_type=lidar_type),
+            frame_start_us=start_us,
+            frame_end_us=end_us,
+            sensor_pose=sensor_pose,
+            dynamic_objects=dynamic_objects,
+        )
+
+    @staticmethod
+    def _lidar_return_to_point_cloud(
+        response: LidarRenderReturn,
+        trigger: Clock.Trigger,
+        lidar_logical_id: str,
+    ) -> LidarPointCloudWithMetadata:
+        """Convert a LidarRenderReturn into LidarPointCloudWithMetadata.
+
+        Prefers the packed ``*_buffer`` fields; falls back to the repeated
+        forms by serializing them to the same little-endian buffer layout.
+        ``LidarRenderReturn`` carries no timestamps or logical_id, so those
+        are filled from the request-side ``trigger`` and ``lidar_logical_id``.
+        """
+        if response.point_xyzs_buffer:
+            xyzs = response.point_xyzs_buffer
+        else:
+            xyzs = np.asarray(response.point_xyzs, dtype=np.float32).tobytes()
+        if response.point_intensities_buffer:
+            intensities = response.point_intensities_buffer
+        else:
+            intensities = np.asarray(
+                response.point_intensities, dtype=np.float32
+            ).tobytes()
+        if response.point_ring_ids_buffer:
+            ring_ids = response.point_ring_ids_buffer
+        else:
+            ring_ids = np.asarray(response.point_ring_ids, dtype=np.uint16).tobytes()
+
+        return LidarPointCloudWithMetadata(
+            start_timestamp_us=trigger.time_range_us.start,
+            end_timestamp_us=trigger.time_range_us.stop,
+            point_xyzs=xyzs,
+            point_intensities=intensities,
+            point_ring_ids=ring_ids,
+            num_points=response.num_points,
+            lidar_logical_id=lidar_logical_id,
+        )
+
+    async def render_lidar(
+        self,
+        ego_trajectory: Trajectory,
+        traffic_trajectories: Dict[str, Trajectory],
+        lidar_logical_id: str,
+        lidar_type: LidarDeviceType,
+        sensor_pose_delta: Pose | None,
+        trigger: Clock.Trigger,
+        scene_id: str,
+    ) -> LidarPointCloudWithMetadata:
+        """Render a single lidar point cloud from the given scene and trajectories.
+
+        Returns a LidarPointCloudWithMetadata.  In skip mode returns an empty
+        point cloud sized to ``num_points=0`` so callers can downstream-submit
+        without branching.
+        """
+        if self.skip:
+            logger.info("Skip mode: sensorsim returning empty point cloud")
+            return LidarPointCloudWithMetadata(
+                start_timestamp_us=trigger.time_range_us.start,
+                end_timestamp_us=trigger.time_range_us.stop,
+                point_xyzs=b"",
+                point_intensities=b"",
+                point_ring_ids=b"",
+                num_points=0,
+                lidar_logical_id=lidar_logical_id,
+            )
+
+        session_info = self._require_session_info()
+        request = self.construct_lidar_render_request(
+            ego_trajectory,
+            traffic_trajectories,
+            lidar_type,
+            sensor_pose_delta,
+            trigger,
+            scene_id,
+        )
+
+        await session_info.broadcaster.broadcast(LogEntry(lidar_render_request=request))
+
+        response: LidarRenderReturn = await profiled_rpc_call(
+            "render_lidar",
+            "sensorsim",
+            self.stub.render_lidar,
+            request,
+            unavailable_retry_delays_s=SENSORSIM_UNAVAILABLE_RETRY_DELAYS_S,
+        )
+
+        return self._lidar_return_to_point_cloud(response, trigger, lidar_logical_id)
+
     @staticmethod
     def _batch_return_to_images(
         items: list[BatchRGBRenderReturnItem],
@@ -441,12 +597,25 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
         scene_id: str,
         image_format: ImageFormat,
         ego_mask_rig_config_id: str | None = None,
-    ) -> (list[ImageWithMetadata], bytes | None):
+        lidar_triggers: (
+            list[tuple[str, LidarDeviceType, Pose | None, Clock.Trigger]] | None
+        ) = None,
+    ) -> tuple[
+        list[ImageWithMetadata], list[LidarPointCloudWithMetadata], bytes | None
+    ]:
+        """Render the given cameras and lidars in a single ``render_aggregated`` RPC.
+
+        ``lidar_triggers`` is a list of ``(lidar_logical_id, lidar_type,
+        sensor_pose_delta, trigger)`` tuples; logical_id is not carried on
+        the wire (mirroring batch_render_rgb's separate ``camera_name``
+        field) so the response items are matched back to it by request order.
+
+        Returns ``(images, lidar_clouds, driver_data)``.  The lidar list is
+        empty when no lidar triggers were submitted; the RPC contract is
+        still exercised end-to-end whenever lidars are passed even if the
+        renderer-side implementation is still a NOP.
         """
-        Render multiple RGB images from the given scene and trajectories.
-        Returns a tuple containing a list of ImageWithMetadata containing the rendered images
-        and optional driver data bytes (forwarded without processing to the driver).
-        """
+        lidar_triggers = lidar_triggers or []
         session_info = self._require_session_info()
         available_ego_masks = await self.get_available_ego_masks()
 
@@ -468,7 +637,17 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
             )
             request.rgb_requests.append(rgb_request)
 
-        # TODO(mwatson): Add requests/handling for lidars
+        for _, lidar_type, sensor_pose_delta, trigger in lidar_triggers:
+            lidar_request = self.construct_lidar_render_request(
+                ego_trajectory,
+                traffic_trajectories,
+                lidar_type,
+                sensor_pose_delta,
+                trigger,
+                scene_id,
+            )
+            request.lidar_requests.append(lidar_request)
+
         await session_info.broadcaster.broadcast(
             LogEntry(aggregated_render_request=request)
         )
@@ -492,7 +671,22 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
                 )
             )
 
-        return (images_with_metadata, response.driver_data)
+        lidar_clouds: list[LidarPointCloudWithMetadata] = []
+        if len(response.lidar_returns) > len(lidar_triggers):
+            raise RuntimeError(
+                f"render_aggregated returned {len(response.lidar_returns)} "
+                f"lidar entries but only {len(lidar_triggers)} were requested"
+            )
+        for (lidar_logical_id, _, _, trigger), lidar_return in zip(
+            lidar_triggers, response.lidar_returns
+        ):
+            lidar_clouds.append(
+                self._lidar_return_to_point_cloud(
+                    lidar_return, trigger, lidar_logical_id
+                )
+            )
+
+        return (images_with_metadata, lidar_clouds, response.driver_data)
 
     async def render(
         self,

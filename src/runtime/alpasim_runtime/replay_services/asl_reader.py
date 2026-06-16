@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, List, Tuple, Type, Union
 
 from alpasim_grpc.v0 import common_pb2
-from alpasim_grpc.v0.egodriver_pb2 import RolloutCameraImage
+from alpasim_grpc.v0.egodriver_pb2 import RolloutCameraImage, RolloutLidarPointCloud
 from alpasim_grpc.v0.sensorsim_pb2 import RGBRenderRequest
 from alpasim_utils.logs import async_read_pb_log
 from google.protobuf import json_format
@@ -153,6 +153,12 @@ SERVICE_EXCHANGES = {
             processor=lambda self, entry: self.driver_images.append(entry),
         ),
         ExchangeConfig(
+            method="submit_lidar_observation",
+            request_entry="driver_lidar_point_cloud",
+            response=common_pb2.Empty,
+            processor=lambda self, entry: self.driver_lidar_point_clouds.append(entry),
+        ),
+        ExchangeConfig(
             method="submit_egomotion_observation",
             request_entry="driver_ego_trajectory",
             response=common_pb2.Empty,
@@ -202,6 +208,11 @@ SERVICE_EXCHANGES = {
             response=None,  # Special case - no response in ASL
         ),
         ExchangeConfig(
+            method="render_lidar",
+            request_entry="lidar_render_request",
+            response=None,  # LidarRenderReturn is logged as a side artifact, mirroring render_rgb
+        ),
+        ExchangeConfig(
             method="get_available_cameras",
             request_entry="available_cameras_request",
             response="available_cameras_return",
@@ -248,6 +259,10 @@ class ASLReader:
         self.asl_metadata: Dict[str, Any] = {}
         # Store camera images from driver for sensorsim correlation
         self.driver_images: List[RolloutCameraImage] = []
+        # Store lidar point clouds from driver for sensorsim correlation.
+        # Mirrors ``driver_images``; populated by the submit_lidar_observation
+        # ExchangeConfig.processor.
+        self.driver_lidar_point_clouds: List[RolloutLidarPointCloud] = []
 
     def reset(self) -> None:
         """Reset the ASL reader for a fresh load"""
@@ -255,6 +270,7 @@ class ASLReader:
         self._consumed_indices.clear()
         self.asl_metadata.clear()
         self.driver_images.clear()
+        self.driver_lidar_point_clouds.clear()
 
     async def load_exchanges(self) -> None:
         """Load and pair request/response exchanges from ASL file"""

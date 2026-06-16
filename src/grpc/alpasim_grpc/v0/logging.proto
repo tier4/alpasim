@@ -119,5 +119,10 @@ message LogEntry {
         omnidreams.video_model.VideoChunkReturn video_model_chunk_return = 29;
 
         nre.grpc.protos.sensorsim.BatchRGBRenderRequest batch_render_request = 30;
+
+        nre.grpc.protos.sensorsim.LidarRenderRequest lidar_render_request = 31;
+        // LidarRenderReturn is saved separately as a side artifact (mirrors RGBRenderReturn).
+
+        egodriver.RolloutLidarPointCloud driver_lidar_point_cloud = 32;
     }
 }

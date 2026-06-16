@@ -63,6 +63,7 @@ class _FakeSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         self.aggregated_render_requests: list[sensorsim_pb2.AggregatedRenderRequest] = (
             []
         )
+        self.lidar_render_requests: list[sensorsim_pb2.LidarRenderRequest] = []
 
     async def get_version(self, request: Empty, context):
         del request, context
@@ -90,6 +91,11 @@ class _FakeSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         self.render_requests.append(request)
         return sensorsim_pb2.RGBRenderReturn(image_bytes=_TINY_JPEG)
 
+    async def render_lidar(self, request: sensorsim_pb2.LidarRenderRequest, context):
+        del context
+        self.lidar_render_requests.append(request)
+        return sensorsim_pb2.LidarRenderReturn(num_points=0)
+
     async def batch_render_rgb(
         self,
         request: sensorsim_pb2.BatchRGBRenderRequest,
@@ -115,6 +121,8 @@ class _FakeSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         response = sensorsim_pb2.AggregatedRenderReturn()
         for _ in request.rgb_requests:
             response.rgb_returns.add().image_bytes = _TINY_JPEG
+        for _ in request.lidar_requests:
+            response.lidar_returns.add(num_points=0)
         return response
 
 
