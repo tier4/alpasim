@@ -12,6 +12,7 @@ service EgodriverService {
     rpc start_session (DriveSessionRequest) returns (common.SessionRequestStatus);
     rpc close_session (DriveSessionCloseRequest) returns (common.Empty);
     rpc submit_image_observation (RolloutCameraImage) returns (common.Empty);
+    rpc submit_lidar_observation (RolloutLidarPointCloud) returns (common.Empty);
     rpc submit_egomotion_observation (RolloutEgoTrajectory) returns (common.Empty);
     rpc submit_route (RouteRequest) returns (common.Empty);
     rpc submit_recording_ground_truth (GroundTruthRequest) returns (common.Empty);
@@ -70,6 +71,25 @@ message RolloutCameraImage {
 
     string session_uuid = 1;
     CameraImage camera_image = 3;
+}
+
+message RolloutLidarPointCloud {
+    message LidarPointCloud {
+        fixed64 frame_start_us = 1;
+        fixed64 frame_end_us = 2;
+        // Flat [x1, y1, z1, x2, y2, z2, ...] buffer in the end-of-spin lidar frame.
+        // Matches LidarRenderReturn.point_xyzs_buffer wire format from sensorsim.proto.
+        bytes point_xyzs_buffer = 3;
+        // One float per point in [0, 1]; matches LidarRenderReturn.point_intensities_buffer.
+        bytes point_intensities_buffer = 4;
+        uint32 num_points = 5;
+        string logical_id = 6;
+        // Packed little-endian uint16 per point; matches LidarRenderReturn.point_ring_ids_buffer.
+        bytes point_ring_ids_buffer = 7;
+    }
+
+    string session_uuid = 1;
+    LidarPointCloud lidar_point_cloud = 2;
 }
 
 message RolloutEgoTrajectory {

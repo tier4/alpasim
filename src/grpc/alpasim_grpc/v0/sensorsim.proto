@@ -254,6 +254,14 @@ message LidarRenderReturn {
     uint32 num_points=3;
     bytes point_xyzs_buffer = 4;
     bytes point_intensities_buffer=5;
+
+    // Ring (laser channel) id per point. One uint32 per point in the
+    // repeated form; ``point_ring_ids_buffer`` is a packed little-endian
+    // uint16 buffer (sufficient for the >= 128-channel devices currently
+    // listed in ``LidarDeviceType``). Field order is appended at the end to
+    // preserve wire compatibility with existing NRE encoders that omit it.
+    repeated uint32 point_ring_ids = 6;
+    bytes point_ring_ids_buffer = 7;
 }
 
 message LidarRenderRequest {

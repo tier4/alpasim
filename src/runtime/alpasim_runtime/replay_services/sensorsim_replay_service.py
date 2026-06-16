@@ -57,6 +57,20 @@ class SensorsimReplayService(
         # Create and return the response
         return sensorsim_pb2.RGBRenderReturn(image_bytes=image_data)
 
+    def render_lidar(
+        self, request: sensorsim_pb2.LidarRenderRequest, context: grpc.ServicerContext
+    ) -> sensorsim_pb2.LidarRenderReturn:
+        """NOP LiDAR render handler.
+
+        Validates the request against the ASL exchange log (so replay still
+        catches missing/extra invocations) and returns an empty point cloud.
+        Nurec does not yet provide a real LiDAR renderer; this stub keeps the
+        wire path exercised end-to-end so a real implementation can drop in
+        without runtime changes.
+        """
+        self.validate_request("render_lidar", request, context)
+        return sensorsim_pb2.LidarRenderReturn(num_points=0)
+
     def get_available_cameras(
         self,
         request: sensorsim_pb2.AvailableCamerasRequest,

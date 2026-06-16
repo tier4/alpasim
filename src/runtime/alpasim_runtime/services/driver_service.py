@@ -20,6 +20,7 @@ from alpasim_grpc.v0.egodriver_pb2 import (
     GroundTruthRequest,
     RolloutCameraImage,
     RolloutEgoTrajectory,
+    RolloutLidarPointCloud,
     RouteRequest,
 )
 from alpasim_grpc.v0.egodriver_pb2_grpc import EgodriverServiceStub
@@ -35,7 +36,7 @@ from alpasim_utils.geometry import (
     trajectory_from_grpc,
     trajectory_to_grpc,
 )
-from alpasim_utils.types import ImageWithMetadata
+from alpasim_utils.types import ImageWithMetadata, LidarPointCloudWithMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,36 @@ class DriverService(ServiceBase[EgodriverServiceStub]):
             "submit_image_observation",
             "driver",
             self.stub.submit_image_observation,
+            request,
+        )
+
+    async def submit_lidar(self, point_cloud: LidarPointCloudWithMetadata) -> None:
+        """Submit a LiDAR point cloud observation for the current session."""
+        session_info = self._require_session_info()
+        request = RolloutLidarPointCloud(
+            session_uuid=session_info.uuid,
+            lidar_point_cloud=RolloutLidarPointCloud.LidarPointCloud(
+                frame_start_us=point_cloud.start_timestamp_us,
+                frame_end_us=point_cloud.end_timestamp_us,
+                point_xyzs_buffer=point_cloud.point_xyzs,
+                point_intensities_buffer=point_cloud.point_intensities,
+                point_ring_ids_buffer=point_cloud.point_ring_ids,
+                num_points=point_cloud.num_points,
+                logical_id=point_cloud.lidar_logical_id,
+            ),
+        )
+
+        await session_info.broadcaster.broadcast(
+            LogEntry(driver_lidar_point_cloud=request)
+        )
+
+        if self.skip:
+            return
+
+        await profiled_rpc_call(
+            "submit_lidar_observation",
+            "driver",
+            self.stub.submit_lidar_observation,
             request,
         )
 
