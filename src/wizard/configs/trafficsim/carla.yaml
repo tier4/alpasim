@@ -20,6 +20,7 @@ trafficsim:
 services:
   trafficsim:
     image: ${defines.trafficsim_image}
+    dockerfile: trafficsim.Dockerfile
     volumes:
       - "${trafficsim.scenario_dir}:/mnt/scenarios"
       - "${defines.trafficsim_map_cache}:/mnt/maps"

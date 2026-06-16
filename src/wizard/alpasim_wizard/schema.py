@@ -155,6 +155,11 @@ class ServiceConfig:
     # No Dockerfile path is added to the docker-compose.yaml.
     external_image: bool = False
     pull_policy: str = "missing"
+    # Path (relative to the repo root) of the Dockerfile used to build this
+    # service's image. Defaults to the shared base "Dockerfile"; profiles that
+    # need a specialised image (e.g. physics=carla, trafficsim=carla) can
+    # override this so docker-compose builds the right artifact.
+    dockerfile: str = "Dockerfile"
     command: list[str] = MISSING
     # Number of service replicas to run per container.
     # If gpus is None or empty, creates a single container with this many replicas.

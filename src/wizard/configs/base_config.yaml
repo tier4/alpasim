@@ -25,6 +25,7 @@ defines:
   driver_model: ???
   image_registry: ""
   base_image: "${defines.image_registry}alpasim-base:${repo-version:}"
+  physics_carla_image: "${defines.image_registry}alpasim-physics-carla:${repo-version:}"
   trafficsim_image: "${defines.image_registry}alpasim-trafficsim:${repo-version:}"
   hf_cache: "${oc.env:HF_HOME,${oc.env:HOME}/.cache/huggingface}"
 
