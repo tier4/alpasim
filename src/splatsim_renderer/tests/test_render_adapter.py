@@ -55,6 +55,19 @@ def test_camera_spec_to_intrinsics_unsupported_branch():
         camera_spec_to_intrinsics(spec)
 
 
+def test_camera_spec_to_intrinsics_unset_oneof():
+    spec = sensorsim_pb2.CameraSpec(resolution_w=960, resolution_h=540)
+    with pytest.raises(NotImplementedError, match="camera_param is unset"):
+        camera_spec_to_intrinsics(spec)
+
+
+def test_camera_spec_to_intrinsics_rejects_zero_resolution():
+    spec = sensorsim_pb2.CameraSpec(resolution_w=0, resolution_h=540)
+    spec.opencv_pinhole_param.focal_length_x = 500.0
+    with pytest.raises(ValueError, match="resolution must be positive"):
+        camera_spec_to_intrinsics(spec)
+
+
 def test_pose_identity_yields_translation_only_viewmat():
     pose = common_pb2.Pose(
         vec=common_pb2.Vec3(x=1.0, y=2.0, z=3.0),
@@ -121,3 +134,36 @@ def test_encode_image_invalid_shape():
     rgb = np.zeros((4, 6), dtype=np.float32)
     with pytest.raises(ValueError):
         encode_image(rgb, sensorsim_pb2.PNG, 0.0)
+
+
+def test_encode_image_uint8_input_passes_through():
+    rgb = np.zeros((2, 3, 3), dtype=np.uint8)
+    rgb[0, 0] = [200, 100, 50]
+    data = encode_image(rgb, sensorsim_pb2.PNG, 0.0)
+    img = Image.open(io.BytesIO(data))
+    arr = np.array(img)
+    assert tuple(arr[0, 0]) == (200, 100, 50)
+
+
+def test_encode_image_rejects_unsupported_dtype():
+    rgb = np.zeros((2, 3, 3), dtype=np.int32)
+    with pytest.raises(TypeError, match="unsupported RGB dtype"):
+        encode_image(rgb, sensorsim_pb2.PNG, 0.0)
+
+
+def test_encode_image_undefined_format_defaults_to_png():
+    rgb = np.zeros((2, 3, 3), dtype=np.float32)
+    data = encode_image(rgb, sensorsim_pb2.UNDEFINED, 0.0)
+    # Should be decodable as PNG.
+    img = Image.open(io.BytesIO(data))
+    assert img.format == "PNG"
+
+
+def test_identity_quat_takes_fast_path():
+    """Identity quaternion should yield exactly the 3x3 identity matrix."""
+    pose = common_pb2.Pose(
+        vec=common_pb2.Vec3(),
+        quat=common_pb2.Quat(w=1.0),
+    )
+    viewmat = pose_to_viewmat(pose)
+    np.testing.assert_array_equal(viewmat[:3, :3], np.eye(3, dtype=np.float32))

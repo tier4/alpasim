@@ -19,7 +19,7 @@ Dynamic objects from the gRPC requests are intentionally ignored (NOP).
 from __future__ import annotations
 
 import logging
-import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,7 +29,13 @@ logger = logging.getLogger(__name__)
 
 
 def _synthesise_scene_yaml(tiles_dir: Path, resolution: tuple[int, int]) -> Path:
-    """Write a temp YAML pointing splatsim at the directory's tileset.json."""
+    """Write a deterministic scene config alongside the tileset.
+
+    Living next to the tileset (rather than in /tmp) means the file is
+    discoverable for debugging, gets cleaned up when the bind-mounted host
+    directory is, and is overwritten in place on container restart instead
+    of leaking new copies each time the server boots.
+    """
     tileset = tiles_dir / "tileset.json"
     if not tileset.exists():
         raise FileNotFoundError(
@@ -47,13 +53,11 @@ def _synthesise_scene_yaml(tiles_dir: Path, resolution: tuple[int, int]) -> Path
             "device": "cuda",
         },
     }
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".yaml", prefix="splatsim_scene_", delete=False
-    )
-    yaml.safe_dump(cfg, tmp)
-    tmp.close()
-    logger.info("synthesised splatsim scene config at %s for %s", tmp.name, tileset)
-    return Path(tmp.name)
+    target = tiles_dir / ".splatsim_scene_synthesised.yaml"
+    with target.open("w") as fh:
+        yaml.safe_dump(cfg, fh)
+    logger.info("synthesised splatsim scene config at %s for %s", target, tileset)
+    return target
 
 
 def resolve_scene_yaml(tiles_dir: Path, resolution: tuple[int, int]) -> Path:
@@ -80,25 +84,37 @@ class SceneHandle:
         self._scene: Any = None
         self._renderer: Any = None
         self._device: Any = None
+        # gRPC server uses ThreadPoolExecutor, so concurrent first-render
+        # callers could otherwise both pass the `_scene is None` check and
+        # initialise the scene twice. Double-checked locking guards this.
+        self._init_lock = threading.Lock()
 
     def _ensure_loaded(self) -> None:
         if self._scene is not None:
             return
-        # Heavy imports kept local so server.py can import this module on a
-        # box with no CUDA / no torch (unit tests).
-        import torch  # type: ignore
-        from splatsim.renderer import Renderer  # type: ignore
-        from splatsim.scene import Scene  # type: ignore
+        with self._init_lock:
+            if self._scene is not None:
+                return
+            # Heavy imports kept local so server.py can import this module on
+            # a box with no CUDA / no torch (unit tests).
+            import torch  # type: ignore
+            from splatsim.renderer import Renderer  # type: ignore
+            from splatsim.scene import Scene  # type: ignore
 
-        yaml_path = resolve_scene_yaml(self._tiles_dir, self._default_resolution)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._scene = Scene.from_config(str(yaml_path), device=self._device)
-        self._renderer = Renderer(
-            width=self._default_resolution[0],
-            height=self._default_resolution[1],
-            device=self._device,
-        )
-        logger.info("splatsim scene loaded (device=%s)", self._device)
+            yaml_path = resolve_scene_yaml(self._tiles_dir, self._default_resolution)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            scene = Scene.from_config(str(yaml_path), device=device)
+            renderer = Renderer(
+                width=self._default_resolution[0],
+                height=self._default_resolution[1],
+                device=device,
+            )
+            # Publish all three at once so concurrent readers that pass the
+            # fast-path `_scene is not None` check see a consistent set.
+            self._device = device
+            self._renderer = renderer
+            self._scene = scene
+            logger.info("splatsim scene loaded (device=%s)", self._device)
 
     def render(self, viewmat_np, k_np):
         """Render a single frame and return an ndarray (H, W, 3) float32 [0, 1]."""
