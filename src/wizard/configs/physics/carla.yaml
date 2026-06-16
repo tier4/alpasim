@@ -1,16 +1,23 @@
 # @package _global_
 #
-# Enables the CARLA 0.9.16 Server inside the physics container.
-# Builds the dedicated `physics.Dockerfile` (extends ${defines.base_image} and
-# overlays the CARLA Unreal binary + Vulkan/SDL libs at /opt/carla).
-# entrypoint.sh launches CarlaUE4.sh in parallel with physics_server when
-# CARLA_ENABLED=true.
+# Builds the `physics.Dockerfile` image (which extends ${defines.base_image}
+# and overlays the CARLA 0.9.16 Unreal binary at /opt/carla) and swaps the
+# physics command to a wrapper that launches CarlaUE4.sh in parallel with
+# physics_server. The default profile keeps the slim image and runs
+# physics_server alone.
 services:
   physics:
     image: ${defines.physics_carla_image}
     dockerfile: physics.Dockerfile
     environments:
       - WARP_CACHE_PATH='/mnt/warp'
-      - CARLA_ENABLED=true
       - CARLA_PORT=2000
       - CARLA_ROOT=/opt/carla
+    command:
+      - "bash /repo/src/physics/alpasim_physics/entrypoint.sh"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--artifact-glob=/mnt/nre-data/{sceneset}/**/*.usdz"
+      - "--use-ground-mesh=true"
+      - "--cache-size=${defines.physics_cache_size}"
+      - "--log-level=${wizard.log_level}"

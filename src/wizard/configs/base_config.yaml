@@ -171,13 +171,8 @@ services:
       - "${repo-relative:'plugins'}:/repo/plugins"
     environments:
       - WARP_CACHE_PATH='/mnt/warp'
-      # CARLA_ENABLED is flipped to "true" by the `physics=carla` profile to
-      # launch the bundled CARLA Server alongside physics_server.
-      - CARLA_ENABLED=false
-      - CARLA_PORT=2000
-      - CARLA_ROOT=/opt/carla
     command:
-      - "bash /repo/src/physics/alpasim_physics/entrypoint.sh"
+      - "uv run physics_server"
       - "--host=0.0.0.0" # again, default container IP
       - "--port={port}" # arbitrary, needs to be updated in runtime-config.yaml
       - "--artifact-glob=/mnt/nre-data/{sceneset}/**/*.usdz"
