@@ -9,15 +9,16 @@ Town map and the traffic spawn rules; the actual spawning is delegated to
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import os
+import threading
 from concurrent import futures
 from typing import Optional
 
 import grpc
 from alpasim_grpc.v0 import common_pb2, traffic_pb2, traffic_pb2_grpc
 
+from . import __version__ as ts_version
 from .carla_session import CarlaSession
 from .scenario_runner import ScenarioRunner
 
@@ -39,6 +40,10 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
         self._tm_port = tm_port
         self._scenario_path = scenario_path
         self._sessions: dict[str, CarlaSession] = {}
+        # gRPC server uses a ThreadPoolExecutor, so start/close/simulate may run
+        # concurrently on different threads. The lock guards _sessions and the
+        # session-creation critical section.
+        self._sessions_lock = threading.Lock()
         try:
             import carla  # type: ignore
         except ImportError:
@@ -50,9 +55,15 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
     def start_session(self, request: traffic_pb2.TrafficSessionRequest, context):
         if self._carla_module is None:
             context.abort(grpc.StatusCode.FAILED_PRECONDITION, "carla Python API unavailable")
+            return common_pb2.SessionRequestStatus()  # unreachable; defensive
 
-        if request.session_uuid in self._sessions:
-            context.abort(grpc.StatusCode.ALREADY_EXISTS, f"session {request.session_uuid} already open")
+        with self._sessions_lock:
+            if request.session_uuid in self._sessions:
+                context.abort(
+                    grpc.StatusCode.ALREADY_EXISTS,
+                    f"session {request.session_uuid} already open",
+                )
+                return common_pb2.SessionRequestStatus()  # unreachable; defensive
 
         session = CarlaSession(
             session_uuid=request.session_uuid,
@@ -70,14 +81,17 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
                 carla_module=self._carla_module,
             )
 
-        self._sessions[request.session_uuid] = session
+        with self._sessions_lock:
+            self._sessions[request.session_uuid] = session
         logger.info("session %s started (%d actors)", request.session_uuid, len(session.actors))
         return common_pb2.SessionRequestStatus()
 
     def simulate(self, request: traffic_pb2.TrafficRequest, context):
-        session = self._sessions.get(request.session_uuid)
+        with self._sessions_lock:
+            session = self._sessions.get(request.session_uuid)
         if session is None:
             context.abort(grpc.StatusCode.NOT_FOUND, f"unknown session {request.session_uuid}")
+            return traffic_pb2.TrafficReturn()  # unreachable; defensive
 
         for update in request.object_trajectory_updates:
             if update.object_id == "EGO":
@@ -87,14 +101,13 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
         return session.snapshot()
 
     def close_session(self, request: traffic_pb2.TrafficSessionCloseRequest, context):
-        session = self._sessions.pop(request.session_uuid, None)
+        with self._sessions_lock:
+            session = self._sessions.pop(request.session_uuid, None)
         if session is not None:
             session.close()
         return common_pb2.Empty()
 
     def get_metadata(self, request: common_pb2.Empty, context):
-        from alpasim_trafficsim import __version__ as ts_version
-
         metadata = traffic_pb2.TrafficModuleMetadata(
             minimum_history_length_us=int(1e6),
         )

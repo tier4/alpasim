@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
-from alpasim_grpc.v0 import traffic_pb2
+from alpasim_grpc.v0 import common_pb2, traffic_pb2
 
 from .grpc_adapter import (
     actor_bounding_box_to_grpc,
@@ -52,6 +52,7 @@ class CarlaSession:
     traffic_manager: Any = None
     actors: list[SpawnedActor] = field(default_factory=list)
     last_time_query_us: int = 0
+    _ego_actor: Optional[SpawnedActor] = None
 
     def open(self, carla_module) -> None:
         """Connect to CARLA, load the map and switch to synchronous mode."""
@@ -76,35 +77,39 @@ class CarlaSession:
         self.world.apply_settings(settings)
 
     def register_actor(self, object_id: str, actor: Any, *, is_ego: bool = False, is_static: bool = False) -> None:
-        self.actors.append(SpawnedActor(object_id=object_id, actor=actor, is_ego=is_ego, is_static=is_static))
+        entry = SpawnedActor(object_id=object_id, actor=actor, is_ego=is_ego, is_static=is_static)
+        self.actors.append(entry)
+        if is_ego:
+            self._ego_actor = entry
 
     def apply_ego_update(self, update: traffic_pb2.ObjectTrajectoryUpdate) -> None:
         """Set the ego actor's transform from the last pose in the update."""
-        ego = next((a for a in self.actors if a.is_ego), None)
-        if ego is None or not update.trajectory.poses:
+        if self._ego_actor is None or not update.trajectory.poses:
             return
         target_pose = update.trajectory.poses[-1].pose
-        ego.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
+        self._ego_actor.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
     def tick_until(self, target_time_us: int) -> None:
-        """Advance the CARLA world until `target_time_us`."""
-        if self.last_time_query_us == 0:
-            # First tick after start_session — single tick to materialise spawns.
-            self.world.tick()
-            self.last_time_query_us = target_time_us
-            return
+        """Advance the CARLA world to (or past) `target_time_us`.
 
-        delta_us = max(target_time_us - self.last_time_query_us, 0)
+        Always advances by at least one tick so the snapshot reflects a fresh
+        world state even when the requested delta is shorter than fixed_delta
+        (this avoids returning stale poses when Runtime polls faster than the
+        configured step).
+        """
         step_us = int(self.fixed_delta_seconds * 1e6)
-        steps = max(1, delta_us // step_us) if step_us > 0 else 1
+        delta_us = max(target_time_us - self.last_time_query_us, 0)
+        if step_us > 0:
+            # ceil(delta_us / step_us), with a minimum of 1 so we always tick.
+            steps = max(1, -(-delta_us // step_us))
+        else:
+            steps = 1
         for _ in range(steps):
             self.world.tick()
         self.last_time_query_us = target_time_us
 
     def snapshot(self) -> traffic_pb2.TrafficReturn:
         """Collect the current pose of every registered actor."""
-        from alpasim_grpc.v0 import common_pb2
-
         updates: list[traffic_pb2.ObjectTrajectoryUpdate] = []
         for entry in self.actors:
             transform = entry.actor.get_transform()
@@ -141,6 +146,7 @@ class CarlaSession:
             except Exception:  # noqa: BLE001
                 logger.exception("failed to destroy actor %s", entry.object_id)
         self.actors.clear()
+        self._ego_actor = None
         if self.world is not None:
             try:
                 settings = self.world.get_settings()
