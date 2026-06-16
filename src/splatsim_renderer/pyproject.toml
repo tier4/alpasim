@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpasim-splatsim-renderer"
+version = "0.1.0"
+description = "Splatsim-backed renderer micro-service for Alpasim (SensorsimService gRPC)"
+# Pinned to Python 3.10 to match tier4/splatsim's wheel constraints
+# (PyTorch 2.4 + gsplat + CUDA 12.4).
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "alpasim_grpc",
+  "grpcio",
+  "numpy",
+  "Pillow",
+  "pyyaml",
+  "omegaconf",
+]
+
+[project.optional-dependencies]
+# `splatsim` extras pull in the upstream tier4/splatsim package + its CUDA
+# runtime deps. Only the container image needs these; local unit tests run
+# with the lightweight base deps and mock the heavy bits.
+splatsim = [
+  "splatsim",
+  "torch>=2.4,<2.5",
+]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[project.scripts]
+splatsim_renderer_server = "alpasim_splatsim_renderer.server:main"
+
+[tool.uv.sources]
+alpasim_grpc = { path = "../grpc", editable = true }
+splatsim = { git = "https://github.com/tier4/splatsim.git", rev = "c58d48e5ff049121e4fca42795852fada24f0942" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alpasim_splatsim_renderer*"]
