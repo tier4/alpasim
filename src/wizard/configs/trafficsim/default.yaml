@@ -1,0 +1,9 @@
+# @package _global_
+#
+# No-op trafficsim profile. Used when the run does not need a real traffic
+# service (e.g. replay-only or wizard sanity checks). Keeps the legacy stub
+# behaviour intact.
+trafficsim:
+  enabled: false
+  scenario_file: null
+  scenario_dir: null

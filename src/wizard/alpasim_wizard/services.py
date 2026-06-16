@@ -218,6 +218,12 @@ class ContainerDefinition:
         runtime_config_name = f"generated-user-config-{int(os.environ.get('SLURM_ARRAY_TASK_ID', 0))}.yaml"
         command = command.replace("{runtime_config_name}", runtime_config_name)
 
+        # trafficsim scenario YAML basename (set via trafficsim=carla profile).
+        # Empty string when no scenario is selected; the receiving binary may
+        # treat that as "no scenario" and skip spawning.
+        scenario_file = getattr(getattr(context.cfg, "trafficsim", None), "scenario_file", None)
+        command = command.replace("{scenario_file}", scenario_file or "")
+
         return command
 
     @staticmethod

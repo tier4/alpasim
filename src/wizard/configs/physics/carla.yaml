@@ -1,0 +1,13 @@
+# @package _global_
+#
+# Enables the CARLA 0.9.16 Server inside the physics container.
+# The Unreal binary is fetched in the Dockerfile (multi-stage `carla-fetch`)
+# and lives under /opt/carla. entrypoint.sh launches CarlaUE4.sh in parallel
+# with physics_server when CARLA_ENABLED=true.
+services:
+  physics:
+    environments:
+      - WARP_CACHE_PATH='/mnt/warp'
+      - CARLA_ENABLED=true
+      - CARLA_PORT=2000
+      - CARLA_ROOT=/opt/carla
