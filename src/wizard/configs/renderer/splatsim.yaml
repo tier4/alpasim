@@ -1,0 +1,35 @@
+# @package _global_
+#
+# Splatsim-backed renderer. Builds the dedicated `splatsim.Dockerfile` image
+# (CUDA12.4 + Python3.10 + tier4/splatsim) and bind-mounts a host directory
+# of Cesium 3D Tiles in place of the NuRec usdz cache. No upstream asset
+# download is required — the user is expected to populate
+# ${defines.splatsim_tiles_dir}/tileset.json (and optional scene.yaml).
+#
+# Dynamic objects in render requests are NOP for this initial integration;
+# the renderer renders the static Cesium background only.
+#
+# Usage:
+#   uv run alpasim_wizard ... \
+#     renderer=splatsim \
+#     wizard.log_dir=/tmp/run01
+services:
+  renderer:
+    image: ${defines.splatsim_renderer_image}
+    dockerfile: splatsim.Dockerfile
+    external_image: false
+    volumes:
+      - "${defines.splatsim_tiles_dir}:/mnt/cesium-tiles"
+      - "${repo-relative:'src'}:/repo/src"
+    environments:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    command:
+      - "uv run splatsim_renderer_server"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--cesium-tiles-dir=/mnt/cesium-tiles"
+      - "--scene-id=splatsim-default"
+      - "--width=960"
+      - "--height=540"
+      - "--log-level=${wizard.log_level}"
