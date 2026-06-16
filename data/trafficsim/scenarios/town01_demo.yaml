@@ -1,0 +1,15 @@
+# Sibling YAML for town01_demo.py — forwarded as `params` to apply().
+#
+# All keys are optional; the scenario falls back to vehicle.tesla.model3 /
+# vehicle.audi.a2 and no TM customisation if omitted.
+
+ego:
+  blueprint: vehicle.tesla.model3
+
+traffic:
+  default_blueprint: vehicle.audi.a2
+  manager:
+    # NPCs drive 10% slower than the speed limit
+    speed_difference_pct: 10.0
+    # Maintain 2.5m of headway in front
+    distance_to_leading_vehicle_m: 2.5

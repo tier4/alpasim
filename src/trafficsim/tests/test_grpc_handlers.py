@@ -15,6 +15,8 @@ from unittest import mock
 
 import pytest
 
+# Module-level so ScenarioRunner tests can construct fake carla namespaces.
+
 
 def _install_fake_carla(monkeypatch) -> types.ModuleType:
     """Insert a minimal fake `carla` module into sys.modules."""
@@ -225,3 +227,103 @@ def _close_request(uuid: str):
     from alpasim_grpc.v0 import traffic_pb2
 
     return traffic_pb2.TrafficSessionCloseRequest(session_uuid=uuid)
+
+
+# =============================================================================
+# ScenarioRunner: Python + YAML loading
+# =============================================================================
+
+
+def test_scenario_runner_loads_python_module_and_sibling_yaml(tmp_path):
+    """A `.py` scenario is dynamically imported and a sibling `.yaml` becomes params."""
+    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+
+    scenario_py = tmp_path / "demo.py"
+    scenario_py.write_text(
+        "MAP_ID = 'Town02'\n"
+        "FIXED_DELTA_SECONDS = 0.025\n"
+        "SUPPORTED_MAP_IDS = ['Town02']\n"
+        "calls = []\n"
+        "def apply(session, request, carla_module, params):\n"
+        "    calls.append({'params': params, 'objects': [o.object_id for o in request.logged_object_trajectories]})\n"
+    )
+    (tmp_path / "demo.yaml").write_text("ego:\n  blueprint: vehicle.tesla.model3\n")
+
+    runner = ScenarioRunner(str(scenario_py))
+
+    assert runner.map_id == "Town02"
+    assert runner.fixed_delta_seconds == 0.025
+    assert list(runner.supported_map_ids()) == ["Town02"]
+
+    # Drive a single apply() — use a stub session that captures registrations.
+    request = _make_session_request("sess", n_traffic=2)
+    runner._module.apply.__wrapped__ = None  # type: ignore[attr-defined]  # no-op sentinel
+    fake_session = mock.MagicMock()
+    fake_session.world.get_map.return_value = None
+    fake_carla = types.SimpleNamespace()
+    runner.apply(session=fake_session, request=request, carla_module=fake_carla)
+
+    captured = runner._module.calls  # type: ignore[attr-defined]
+    assert len(captured) == 1
+    assert captured[0]["objects"] == ["EGO", "npc-0", "npc-1"]
+    assert captured[0]["params"]["ego"]["blueprint"] == "vehicle.tesla.model3"
+
+
+def test_scenario_runner_rejects_python_without_apply(tmp_path):
+    """A `.py` file without an `apply` callable fails at load time, not at run time."""
+    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+
+    bad = tmp_path / "broken.py"
+    bad.write_text("MAP_ID = 'Town01'\n")  # no apply()
+
+    with pytest.raises(RuntimeError, match="missing a top-level `apply"):
+        ScenarioRunner(str(bad))
+
+
+def test_scenario_runner_python_without_sibling_yaml_passes_empty_params(tmp_path):
+    """If no sibling yaml exists, params is an empty dict."""
+    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+
+    scenario_py = tmp_path / "demo.py"
+    scenario_py.write_text(
+        "received = {}\n"
+        "def apply(session, request, carla_module, params):\n"
+        "    received['params'] = params\n"
+    )
+
+    runner = ScenarioRunner(str(scenario_py))
+    fake_session = mock.MagicMock()
+    fake_session.world.get_map.return_value = None
+    runner.apply(
+        session=fake_session,
+        request=_make_session_request("s", n_traffic=0),
+        carla_module=types.SimpleNamespace(),
+    )
+
+    assert runner._module.received["params"] == {}  # type: ignore[attr-defined]
+
+
+def test_scenario_runner_rejects_unknown_extension(tmp_path):
+    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+
+    bad = tmp_path / "scenario.txt"
+    bad.write_text("anything")
+
+    with pytest.raises(ValueError, match="unsupported scenario extension"):
+        ScenarioRunner(str(bad))
+
+
+def test_scenario_runner_loads_plain_yaml(tmp_path):
+    """A `.yaml` scenario without a Python file uses the declarative spawner."""
+    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+
+    yaml_path = tmp_path / "demo.yaml"
+    yaml_path.write_text(
+        "map:\n  id: Town03\n"
+        "simulation:\n  fixed_delta_seconds: 0.1\n"
+    )
+
+    runner = ScenarioRunner(str(yaml_path))
+    assert runner._module is None
+    assert runner.map_id == "Town03"
+    assert runner.fixed_delta_seconds == 0.1
