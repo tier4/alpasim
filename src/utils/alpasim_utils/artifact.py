@@ -10,6 +10,7 @@ import tempfile
 import threading
 import zipfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import yaml
@@ -180,11 +181,14 @@ class Artifact(SceneDataSource):
 
     @property
     def map(self) -> VectorMap | None:
-        """Load and return the map data from the USDZ file.
+        """Load and return the map data for the scene.
 
         Attempts to load map data in the following order:
-        1. clipgt/map_data directories (if available)
-        2. XODR file (fallback)
+        1. ``clipgt/map_data`` directories inside the USDZ
+        2. ``map.xodr`` inside the USDZ
+        3. ``map.osm`` (Autoware Lanelet2) sitting in the same splatsim
+           scene-bundle directory as the USDZ -- origin is recovered from a
+           sibling ``map.xodr`` via its OpenDRIVE ``geoReference``.
 
         Returns:
             VectorMap instance or None if no map data is available
@@ -222,10 +226,17 @@ class Artifact(SceneDataSource):
                 elif self._load_xodr_map(zip_file):
                     map_loaded = True
                     logger.info("Successfully loaded map from XODR")
+            # Lanelet2 ships as a sidecar in the splatsim scene bundle
+            # (https://github.com/autowarefoundation/3dgs_io), so it lives
+            # NEXT TO the USDZ file rather than inside it. Probe the bundle
+            # directory only if the in-USDZ formats did not match.
+            if not map_loaded and self._load_lanelet2_map_from_bundle_dir():
+                map_loaded = True
+                logger.info("Successfully loaded map from Lanelet2 .osm")
 
             if not map_loaded:
                 logger.warning(
-                    f"No map data (clipgt or XODR) found in {self.source}. "
+                    f"No map data (clipgt, XODR, or Lanelet2) found for {self.source}. "
                     "Skipping map loading."
                 )
                 self._map = None
@@ -289,6 +300,56 @@ class Artifact(SceneDataSource):
             return True
         except (KeyError, FileNotFoundError) as e:
             logger.debug(f"Could not load XODR map: {e}")
+            return False
+
+    def _load_lanelet2_map_from_bundle_dir(self) -> bool:
+        """Load an Autoware Lanelet2 ``map.osm`` from the splatsim scene bundle.
+
+        3dgs_io places non-gaussian sidecars next to the USDZ rather than
+        inside it (see ``_EXTRA_PATHS`` in
+        https://github.com/autowarefoundation/3dgs_io/blob/feat/usdz-io/src/3dgs_io/scene_bundle.py).
+        We look for ``map.osm`` plus ``map.xodr`` in that same directory --
+        the XODR's ``<header geoReference>`` PROJ4 string carries the global
+        anchor that ``map.osm`` itself does not encode.
+
+        Conversion goes through the external ``autoware_lanelet2_to_clipgt``
+        library via ``uvx``; see :mod:`alpasim_utils.lanelet2_to_clipgt`.
+        """
+        bundle_dir = Path(self.source).resolve().parent
+        osm_path = bundle_dir / "map.osm"
+        xodr_path = bundle_dir / "map.xodr"
+        if not osm_path.is_file():
+            return False
+        if not xodr_path.is_file():
+            logger.warning(
+                "Found %s but no sibling map.xodr in %s -- cannot infer Lanelet2 origin.",
+                osm_path.name,
+                bundle_dir,
+            )
+            return False
+        try:
+            from . import lanelet2_to_clipgt
+        except ImportError as e:
+            logger.warning(
+                "Cannot load Lanelet2 map -- alpasim_utils.lanelet2_to_clipgt "
+                "is unavailable: %s",
+                e,
+            )
+            return False
+
+        try:
+            origin = lanelet2_to_clipgt.origin_from_xodr(xodr_path)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                clipgt_dir = lanelet2_to_clipgt.convert_osm_to_clipgt_dir(
+                    osm_path,
+                    Path(temp_dir) / "clipgt",
+                    origin,
+                    clip_id=self.metadata.scene_id,
+                )
+                populate_vector_map(self._map, str(clipgt_dir))
+            return True
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            logger.warning("Could not load Lanelet2 map: %s", e)
             return False
 
     def _extract_map_directories(

@@ -3,6 +3,67 @@
 This document is meant to describe data handling in Alpasim to help test and data engineers build
 the test cases they want and troubleshoot issues.
 
+## HD maps
+
+Alpasim consumes vector maps either packed inside the scene `.usdz` or as
+sidecars in the splatsim scene bundle directory that surrounds the USDZ
+(see [autowarefoundation/3dgs_io](https://github.com/autowarefoundation/3dgs_io)).
+`Artifact.map` probes the following sources, in order:
+
+1. **ClipGT parquet bundle** inside the USDZ -- `clipgt/map_data/` (or
+   `map_data/`) directory. The canonical Alpasim format.
+2. **OpenDRIVE** inside the USDZ -- `map.xodr` plus `rig_trajectories.json`
+   for the OpenDRIVE-ENU → simulation transform.
+3. **Autoware Lanelet2** in the splatsim scene bundle directory -- `map.osm`
+   next to the USDZ, with the origin recovered from a sibling `map.xodr`.
+
+### Bringing in an Autoware Lanelet2 map
+
+Place the splatsim scene bundle sidecars next to the USDZ:
+
+```
+<bundle_dir>/
+  <scene>.usdz       # 3D-GS (Gaussian cloud)
+  map.osm            # Autoware Lanelet2 vector map
+  map.xodr           # OpenDRIVE map -- supplies the geo-anchor (PROJ4)
+```
+
+The Lanelet2 file itself only stores metre-scale local coordinates, so we
+read the geographic anchor from `map.xodr`'s `<header geoReference>` PROJ4
+string and project the local `(0, 0)` back to WGS84 lat/lon. Both maps are
+authored against the same local frame, so that lat/lon is the origin
+Lanelet2 wants.
+
+Lanelet2 → ClipGT conversion is delegated to the external
+[`autoware_lanelet2_to_clipgt`](https://github.com/hakuturu583/autoware_lanelet2_to_clipgt)
+library. Because that library requires Python 3.10 while Alpasim targets
+Python 3.11+, conversion runs through `uvx`, which provisions an isolated
+interpreter. Install `uv` (https://docs.astral.sh/uv/) once and conversion
+is hands-off thereafter.
+
+Two extra entry points are provided when you want to do the conversion
+ahead of time or outside the artifact pipeline:
+
+* `lanelet2-to-clipgt` CLI (from `alpasim-tools`) -- produce a ClipGT parquet
+  bundle from an `.osm` and an explicit origin.
+
+  ```bash
+  uv run lanelet2-to-clipgt \
+      --osm path/to/map.osm \
+      --output-dir out/clipgt \
+      --mgrs-grid 54SUE \
+      --offset-x 81655.73 --offset-y 50137.43 --offset-z 42.5
+  ```
+
+* `alpasim_utils.lanelet2_to_clipgt.load_vector_map_from_lanelet2_osm()` --
+  convert and load into a `trajdata` `VectorMap` in one call.
+
+The Lanelet2 → ClipGT path also synthesises `association.parquet` (lane
+adjacency derived from rail-endpoint geometry) and a minimal `clip.parquet`,
+since the upstream converter does not emit them. `wait_line.parquet` is
+cleared on the way through because the upstream `key.map_id` is incompatible
+with `trajdata`'s `"{wait_line_id}-{lane_id}"` convention.
+
 ## asl files
 
 The output of simulation in alpasim are `asl` files (it stands for AlpaSim Log). These are a
