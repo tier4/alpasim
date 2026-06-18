@@ -40,9 +40,6 @@ alpasim_grpc = {workspace = true}
 alpasim_utils = {workspace = true}
 alpasim_eval = {workspace = true}
 
-[project.scripts]
-lanelet2-to-clipgt = "map_utils.lanelet2_to_clipgt:main"
-
 [tool.hatch.build.targets.wheel]
 packages = [
     "map_utils",

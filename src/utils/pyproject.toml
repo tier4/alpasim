@@ -10,6 +10,7 @@ description = "Utility functions for Alpamayo Sim"
 # autoware_carla_scenario) can pull in pose / trajectory helpers.
 requires-python = ">=3.10,<3.13"
 dependencies = [
+  "3dgs-io[converters]",  # USDZ I/O + Lanelet2->ClipGT converter (uvx-driven)
   "alpasim_grpc",
   "dataclasses-json>=0.6.7",
   "typing-inspect>=0.9.0",  # Required for dataclasses-json with mypy-extensions>=1.0
@@ -20,8 +21,7 @@ dependencies = [
   "imageio[ffmpeg]",
   "omegaconf",
   "pandas",
-  "pyarrow",
-  "pyproj",
+  "pyarrow",  # trajdata post-process: synthesise association.parquet / clip.parquet
   "pytest",
   "pytest-asyncio",
   "trajdata-alpasim",

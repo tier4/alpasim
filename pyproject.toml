@@ -67,6 +67,7 @@ alpasim_driver = { workspace = true }
 alpasim_transfuser = { workspace = true }
 alpasim_wizard = { workspace = true }
 trajdata-alpasim = { git = "https://github.com/NVlabs/trajdata", rev = "3caf3a8bd1a68f4a1545352aea82c535be9510b2" }
+"3dgs-io" = { git = "https://github.com/autowarefoundation/3dgs_io", branch = "feat/usdz-io" }
 
 [tool.uv]
 python-preference = "only-managed"

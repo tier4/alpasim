@@ -187,8 +187,9 @@ class Artifact(SceneDataSource):
         Attempts to load map data in the following order:
         1. ``clipgt/map_data`` directories inside the USDZ
         2. ``map.osm`` (Autoware Lanelet2) inside the USDZ as a splatsim
-           ``extras`` entry, with the global origin recovered from the
-           sibling ``map.xodr`` via its OpenDRIVE ``geoReference``.
+           ``extras`` entry, with the global origin auto-derived from
+           ``tileset.json``'s ECEF ``root.transform`` via
+           :func:`3dgs_io.lanelet2_to_clipgt`.
         3. ``map.xodr`` inside the USDZ (used standalone if Lanelet2 isn't
            present), with the simulation transform from
            ``rig_trajectories.json``.
@@ -311,44 +312,46 @@ class Artifact(SceneDataSource):
         OpenDRIVE, tracks, rigs) as ``extras`` directly inside the USDZ
         archive (see ``_KNOWN_EXTRAS`` in
         https://github.com/autowarefoundation/3dgs_io/blob/feat/usdz-io/src/3dgs_io/scene_usdz.py).
-        We look for ``map.osm`` plus ``map.xodr`` -- the XODR's
-        ``<header geoReference>`` PROJ4 string supplies the global anchor
-        that ``map.osm`` itself does not encode.
+        The origin is recovered from ``tileset.json``'s ECEF
+        ``root.transform`` via :func:`3dgs_io.mgrs_overrides_from_root_transform`
+        and passed to :func:`3dgs_io.lanelet2_to_clipgt` as Hydra overrides.
 
-        Conversion goes through the external ``autoware_lanelet2_to_clipgt``
-        library via ``uvx``; see :mod:`alpasim_utils.lanelet2_to_clipgt`.
+        Conversion is fully delegated to ``3dgs_io.lanelet2_to_clipgt``
+        (uvx-driven); Alpasim only adds the trajdata-compat post-process
+        (``association.parquet`` / ``clip.parquet`` synthesis, wait_line
+        clearing) -- see :mod:`alpasim_utils.lanelet2_postprocess`.
         """
         names = zip_file.namelist()
         if "map.osm" not in names:
             return False
-        if "map.xodr" not in names:
+        if "tileset.json" not in names:
             logger.warning(
-                "Found map.osm but no map.xodr in %s -- cannot infer Lanelet2 origin.",
+                "Found map.osm but no tileset.json in %s -- "
+                "cannot derive Lanelet2 origin.",
                 self.source,
             )
             return False
         try:
-            from . import lanelet2_to_clipgt
+            from . import _dgs_io, lanelet2_postprocess
         except ImportError as e:
-            logger.warning(
-                "Cannot load Lanelet2 map -- alpasim_utils.lanelet2_to_clipgt "
-                "is unavailable: %s",
-                e,
-            )
+            logger.warning("Cannot load Lanelet2 map -- 3dgs_io is unavailable: %s", e)
             return False
 
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 zip_file.extract("map.osm", temp_dir)
-                zip_file.extract("map.xodr", temp_dir)
+                zip_file.extract("tileset.json", temp_dir)
                 osm_path = Path(temp_dir) / "map.osm"
-                xodr_path = Path(temp_dir) / "map.xodr"
-                origin = lanelet2_to_clipgt.origin_from_xodr(xodr_path)
-                clipgt_dir = lanelet2_to_clipgt.convert_osm_to_clipgt_dir(
+                tileset_path = Path(temp_dir) / "tileset.json"
+                clipgt_dir = Path(temp_dir) / "clipgt"
+                _dgs_io.lanelet2_to_clipgt(
                     osm_path,
-                    Path(temp_dir) / "clipgt",
-                    origin,
-                    clip_id=self.metadata.scene_id,
+                    clipgt_dir,
+                    tileset_path=tileset_path,
+                    hydra_overrides=[f"clip_id={self.metadata.scene_id}"],
+                )
+                lanelet2_postprocess.finalize_clipgt_bundle(
+                    clipgt_dir, clip_id=self.metadata.scene_id
                 )
                 populate_vector_map(self._map, str(clipgt_dir))
             return True
