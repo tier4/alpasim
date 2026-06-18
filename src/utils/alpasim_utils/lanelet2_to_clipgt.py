@@ -252,13 +252,13 @@ def _run_library_cli(
 def _origin_overrides(origin: Origin) -> list[str]:
     """Render Hydra overrides that fully replace the ``map`` config block."""
     if isinstance(origin, LatLonOrigin):
-        # `+map.*=` would conflict with the bundled `example` schema; use `++`
-        # to force-override.
+        # `++` force-overrides values present in the bundled `example` schema.
+        # `lat_lon` takes precedence over `mgrs_grid` in origin_from_map_config,
+        # so we don't need to delete `mgrs_grid` from the example.
         return [
             f"++map.lat_lon.latitude={origin.latitude!r}",
             f"++map.lat_lon.longitude={origin.longitude!r}",
             f"++map.lat_lon.altitude={origin.altitude!r}",
-            "~map.mgrs_grid",
         ]
     if isinstance(origin, MgrsOrigin):
         overrides = [f"++map.mgrs_grid={origin.grid}"]
@@ -284,7 +284,7 @@ def _resolve_clip_id(out_dir: Path, requested: str | None) -> str:
     lane_table = pq.read_table(out_dir / "lane.parquet")
     if lane_table.num_rows == 0:
         return "lanelet2"
-    return str(lane_table.column("key")[0]["clip_id"].as_py())
+    return lane_table.column("key")[0]["clip_id"].as_py()
 
 
 def _build_clip_parquet(out_dir: Path, *, clip_id: str) -> None:
@@ -339,9 +339,6 @@ def _build_association_parquet(out_dir: Path, *, clip_id: str) -> None:
     schema = _association_schema()
     lane_path = out_dir / "lane.parquet"
     lane_table = pq.read_table(lane_path)
-    if lane_table.num_rows == 0:
-        pq.write_table(_empty_table(schema), out_dir / "association.parquet")
-        return
 
     lanes: list[tuple[str, np.ndarray, np.ndarray]] = []
     for i in range(lane_table.num_rows):
@@ -388,10 +385,14 @@ def _build_association_parquet(out_dir: Path, *, clip_id: str) -> None:
                 rows.append(_assoc_row(clip_id, seq, "RIGHT_LANE", a_id, [b_id]))
                 seq += 1
 
-    if rows:
-        table = pa.Table.from_pylist(rows, schema=schema)
-    else:
-        table = _empty_table(schema)
+    if not rows:
+        # trajdata's df_expand_json only materialises `key.clip_id` etc. when
+        # the struct columns have at least one row to normalise. Emit a single
+        # sentinel row whose `kind` matches none of the kinds trajdata filters
+        # on (NEXT_LANE / PREVIOUS_LANE / LEFT_LANE / RIGHT_LANE / SIGN_TO_LANE),
+        # so it contributes no relations but keeps the parquet readable.
+        rows.append(_assoc_row(clip_id, 0, "NONE", "__sentinel__", []))
+    table = pa.Table.from_pylist(rows, schema=schema)
     pq.write_table(table, out_dir / "association.parquet")
 
 

@@ -21,6 +21,7 @@ dependencies = [
   "omegaconf",
   "pandas",
   "pyarrow",
+  "pyproj",
   "pytest",
   "pytest-asyncio",
   "trajdata-alpasim",

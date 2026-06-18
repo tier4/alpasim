@@ -5,27 +5,33 @@ the test cases they want and troubleshoot issues.
 
 ## HD maps
 
-Alpasim consumes vector maps either packed inside the scene `.usdz` or as
-sidecars in the splatsim scene bundle directory that surrounds the USDZ
-(see [autowarefoundation/3dgs_io](https://github.com/autowarefoundation/3dgs_io)).
+Alpasim consumes vector maps packed inside the scene `.usdz`. 3dgs_io's
+[`save_scene_usdz`](https://github.com/autowarefoundation/3dgs_io/blob/feat/usdz-io/src/3dgs_io/scene_usdz.py)
+produces a single-file USDZ archive that bundles the 3D-GS payload together
+with non-gaussian `extras` (Lanelet2, OpenDRIVE, tracks, rigs).
 `Artifact.map` probes the following sources, in order:
 
 1. **ClipGT parquet bundle** inside the USDZ -- `clipgt/map_data/` (or
    `map_data/`) directory. The canonical Alpasim format.
-2. **OpenDRIVE** inside the USDZ -- `map.xodr` plus `rig_trajectories.json`
-   for the OpenDRIVE-ENU → simulation transform.
-3. **Autoware Lanelet2** in the splatsim scene bundle directory -- `map.osm`
-   next to the USDZ, with the origin recovered from a sibling `map.xodr`.
+2. **Autoware Lanelet2** inside the USDZ -- `map.osm`, with the global
+   origin recovered from a sibling `map.xodr` via its OpenDRIVE
+   `<header geoReference>` PROJ4 string.
+3. **OpenDRIVE** inside the USDZ -- `map.xodr` (used standalone when
+   Lanelet2 isn't present), with `rig_trajectories.json` supplying the
+   OpenDRIVE-ENU → simulation transform.
 
 ### Bringing in an Autoware Lanelet2 map
 
-Place the splatsim scene bundle sidecars next to the USDZ:
+Pack both files into the USDZ as splatsim `extras`:
 
 ```
-<bundle_dir>/
-  <scene>.usdz       # 3D-GS (Gaussian cloud)
-  map.osm            # Autoware Lanelet2 vector map
-  map.xodr           # OpenDRIVE map -- supplies the geo-anchor (PROJ4)
+<scene>.usdz
+├── default.usda
+├── scene.json          # extras.map_lanelet2 → "map.osm"
+├── tileset.json        # extras.map_opendrive → "map.xodr"
+├── chunks/...spz
+├── map.osm             # Autoware Lanelet2 vector map
+└── map.xodr            # OpenDRIVE -- supplies the geo-anchor (PROJ4)
 ```
 
 The Lanelet2 file itself only stores metre-scale local coordinates, so we

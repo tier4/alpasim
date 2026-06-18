@@ -102,7 +102,6 @@ def test_origin_overrides_latlon():
     assert "++map.lat_lon.latitude=35.6895" in joined
     assert "++map.lat_lon.longitude=139.6917" in joined
     assert "++map.lat_lon.altitude=42.5" in joined
-    assert "~map.mgrs_grid" in overrides
 
 
 def test_origin_overrides_mgrs_with_offset():
@@ -193,14 +192,26 @@ def test_build_association_parquet_recovers_next_and_left(tmp_path: Path):
     assert ("A", ("C",)) in left_pairs
 
 
-def test_build_association_parquet_handles_empty_lane_table(tmp_path: Path):
+def test_build_association_parquet_emits_sentinel_when_no_relations(tmp_path: Path):
+    """Even when the heuristic finds no relations (or there are no lanes),
+    the parquet must carry at least one row -- otherwise trajdata's
+    df_expand_json fails to materialise ``key.clip_id`` from empty struct
+    columns and ``find_lane_polylines_parquet`` raises KeyError.
+    The sentinel uses an unused ``kind`` so it filters out as a no-op.
+    """
     _write_synthetic_lane_parquet(tmp_path, [])
     l2c._build_association_parquet(tmp_path, clip_id="clip-empty")
-    table = pq.read_table(tmp_path / "association.parquet")
-    assert table.num_rows == 0
-    # Schema must still be valid for trajdata to read it.
-    assert "key" in table.schema.names
-    assert "Association" in table.schema.names
+    df = pq.read_table(tmp_path / "association.parquet").to_pandas()
+    assert len(df) == 1
+    sentinel = df.iloc[0]
+    assert sentinel["key"]["kind"] == "NONE"
+    assert sentinel["key"]["kind"] not in {
+        "NEXT_LANE",
+        "PREVIOUS_LANE",
+        "LEFT_LANE",
+        "RIGHT_LANE",
+        "SIGN_TO_LANE",
+    }
 
 
 def test_clear_wait_line_parquet_emits_empty_table(tmp_path: Path):
