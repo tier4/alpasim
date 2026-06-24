@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Per-Alpasim-session CARLA client + TrafficManager lifecycle.
 
 One CarlaSession instance corresponds to one TrafficSessionRequest from
@@ -34,6 +37,11 @@ class SpawnedActor:
     actor: Any
     is_ego: bool = False
     is_static: bool = False
+    # True when this actor's transform is overwritten from incoming
+    # ObjectTrajectoryUpdate messages each simulate() tick (ControlMode
+    # GRPC_REPLAY). Otherwise the actor is driven by CARLA TrafficManager
+    # autopilot and incoming updates are ignored.
+    is_grpc_driven: bool = False
 
 
 @dataclass
@@ -52,7 +60,7 @@ class CarlaSession:
     traffic_manager: Any = None
     actors: list[SpawnedActor] = field(default_factory=list)
     last_time_query_us: int = 0
-    _ego_actor: Optional[SpawnedActor] = None
+    _actors_by_id: dict[str, SpawnedActor] = field(default_factory=dict)
 
     def open(self, carla_module) -> None:
         """Connect to CARLA, load the map and switch to synchronous mode."""
@@ -76,18 +84,47 @@ class CarlaSession:
         settings.fixed_delta_seconds = self.fixed_delta_seconds
         self.world.apply_settings(settings)
 
-    def register_actor(self, object_id: str, actor: Any, *, is_ego: bool = False, is_static: bool = False) -> None:
-        entry = SpawnedActor(object_id=object_id, actor=actor, is_ego=is_ego, is_static=is_static)
+    def register_actor(
+        self,
+        object_id: str,
+        actor: Any,
+        *,
+        is_ego: bool = False,
+        is_static: bool = False,
+        is_grpc_driven: Optional[bool] = None,
+    ) -> None:
+        # Back-compat: pre-ControlMode scenarios call register_actor without
+        # is_grpc_driven and expect EGO to be gRPC-driven, everything else TM.
+        if is_grpc_driven is None:
+            is_grpc_driven = is_ego
+        entry = SpawnedActor(
+            object_id=object_id,
+            actor=actor,
+            is_ego=is_ego,
+            is_static=is_static,
+            is_grpc_driven=is_grpc_driven,
+        )
         self.actors.append(entry)
-        if is_ego:
-            self._ego_actor = entry
+        self._actors_by_id[object_id] = entry
+        # Centralize the physics-disable invariant so scenarios don't each
+        # have to remember it: an actor whose transform we overwrite each
+        # tick must not also be simulated by CARLA's physics solver.
+        if is_grpc_driven and not is_static and hasattr(actor, "set_simulate_physics"):
+            actor.set_simulate_physics(False)
 
-    def apply_ego_update(self, update: traffic_pb2.ObjectTrajectoryUpdate) -> None:
-        """Set the ego actor's transform from the last pose in the update."""
-        if self._ego_actor is None or not update.trajectory.poses:
+    def apply_pose_update(self, update: traffic_pb2.ObjectTrajectoryUpdate) -> None:
+        """Overwrite a gRPC-driven actor's transform from the update's last pose.
+
+        Silently ignored when (a) the object_id isn't registered, (b) the
+        registered actor is TM-driven, or (c) the update has no poses. This
+        lets clients send updates for the entire fleet without the server
+        needing to know which subset is gRPC-driven.
+        """
+        entry = self._actors_by_id.get(update.object_id)
+        if entry is None or not entry.is_grpc_driven or not update.trajectory.poses:
             return
         target_pose = update.trajectory.poses[-1].pose
-        self._ego_actor.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
+        entry.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
     def tick_until(self, target_time_us: int) -> None:
         """Advance the CARLA world to (or past) `target_time_us`.
@@ -132,21 +169,21 @@ class CarlaSession:
 
     def bounding_box_for(self, object_id: str):
         """Return the AABB proto for a registered actor (used by metadata)."""
-        for entry in self.actors:
-            if entry.object_id == object_id:
-                return actor_bounding_box_to_grpc(entry.actor)
-        return None
+        entry = self._actors_by_id.get(object_id)
+        return actor_bounding_box_to_grpc(entry.actor) if entry is not None else None
 
     def close(self) -> None:
         """Destroy actors and restore async mode. Safe to call multiple times."""
-        logger.info("session %s: closing (%d actors)", self.session_uuid, len(self.actors))
+        logger.info(
+            "session %s: closing (%d actors)", self.session_uuid, len(self.actors)
+        )
         for entry in self.actors:
             try:
                 entry.actor.destroy()
             except Exception:  # noqa: BLE001
                 logger.exception("failed to destroy actor %s", entry.object_id)
         self.actors.clear()
-        self._ego_actor = None
+        self._actors_by_id.clear()
         if self.world is not None:
             try:
                 settings = self.world.get_settings()
