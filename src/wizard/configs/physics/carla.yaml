@@ -1,10 +1,9 @@
 # @package _global_
 #
-# Builds the `physics.Dockerfile` image (which extends ${defines.base_image}
-# and overlays the CARLA 0.9.16 Unreal binary at /opt/carla) and swaps the
-# physics command to a wrapper that launches CarlaUE4.sh in parallel with
-# physics_server. The default profile keeps the slim image and runs
-# physics_server alone.
+# Builds the self-contained `physics.Dockerfile` image with CUDA runtime,
+# physics_server, and the CARLA 0.9.16 Unreal binary at /opt/carla. Keep the
+# command wrapper here: wizard's docker-compose backend overrides image
+# ENTRYPOINT whenever command is set.
 services:
   physics:
     image: ${defines.physics_carla_image}
