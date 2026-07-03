@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Example trafficsim scenario: ego + N logged NPCs on Town01, TM-controlled.
 
 This file is mounted into the trafficsim container at /mnt/scenarios/ and
@@ -12,6 +15,8 @@ See src/trafficsim/alpasim_trafficsim/scenario_runner.py for the contract:
 from __future__ import annotations
 
 import logging
+
+from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
 
 MAP_ID = "Town01"
 FIXED_DELTA_SECONDS = 0.05
@@ -35,6 +40,7 @@ def apply(session, request, carla_module, params):
 
     for obj in request.logged_object_trajectories:
         is_ego = obj.object_id == "EGO"
+        grpc_driven = resolve_grpc_driven(obj)
         spawn_pose = _pose_to_transform(obj, carla_module)
         bp_filter = ego_filter if is_ego else npc_filter
         candidates = blueprints.filter(bp_filter)
@@ -47,15 +53,21 @@ def apply(session, request, carla_module, params):
                 "requires every logged object to spawn"
             )
         session.register_actor(
-            obj.object_id, actor, is_ego=is_ego, is_static=obj.is_static
+            obj.object_id,
+            actor,
+            is_ego=is_ego,
+            is_static=obj.is_static,
+            is_grpc_driven=grpc_driven,
         )
-        if is_ego or obj.is_static:
+        if grpc_driven or obj.is_static:
             continue
 
         actor.set_autopilot(True, session.tm_port)
         speed_pct = float(tm_cfg.get("speed_difference_pct", 0.0))
         if speed_pct:
-            session.traffic_manager.vehicle_percentage_speed_difference(actor, speed_pct)
+            session.traffic_manager.vehicle_percentage_speed_difference(
+                actor, speed_pct
+            )
         distance_m = float(tm_cfg.get("distance_to_leading_vehicle_m", 0.0))
         if distance_m:
             session.traffic_manager.distance_to_leading_vehicle(actor, distance_m)

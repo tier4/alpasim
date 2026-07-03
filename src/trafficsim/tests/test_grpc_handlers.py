@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Unit tests for the trafficsim gRPC servicer.
 
 The real CARLA Python API is not installed in CI, so we inject a fake `carla`
@@ -51,18 +54,26 @@ def _install_fake_carla(monkeypatch) -> types.ModuleType:
 class _FakeActor:
     def __init__(self, transform):
         self._transform = transform
-        self.bounding_box = types.SimpleNamespace(extent=types.SimpleNamespace(x=2.0, y=1.0, z=0.7))
+        self.bounding_box = types.SimpleNamespace(
+            extent=types.SimpleNamespace(x=2.0, y=1.0, z=0.7)
+        )
         self.destroyed = False
         self.autopilot_calls: list[tuple[bool, int]] = []
+        self.set_transform_calls: list[Any] = []
+        self.physics_enabled: bool = True
 
     def set_transform(self, t):
         self._transform = t
+        self.set_transform_calls.append(t)
 
     def get_transform(self):
         return self._transform
 
     def set_autopilot(self, enabled, tm_port):
         self.autopilot_calls.append((enabled, tm_port))
+
+    def set_simulate_physics(self, enabled):
+        self.physics_enabled = enabled
 
     def destroy(self):
         self.destroyed = True
@@ -77,7 +88,9 @@ class _FakeWorld:
     def __init__(self, fake_carla, actors_by_id: dict[str, _FakeActor]):
         self._fake_carla = fake_carla
         self._actors_by_id = actors_by_id
-        self._settings = types.SimpleNamespace(synchronous_mode=False, fixed_delta_seconds=None)
+        self._settings = types.SimpleNamespace(
+            synchronous_mode=False, fixed_delta_seconds=None
+        )
 
     def get_settings(self):
         return self._settings
@@ -207,9 +220,7 @@ def test_start_session_without_scenario_skips_spawning(servicer):
 def test_close_session_idempotent(servicer):
     ctx = mock.Mock()
     servicer.start_session(_make_session_request("sess-x"), context=ctx)
-    servicer.close_session(
-        _close_request("sess-x"), context=ctx
-    )
+    servicer.close_session(_close_request("sess-x"), context=ctx)
     # Second close on an unknown session is a no-op (not an abort).
     servicer.close_session(_close_request("sess-x"), context=ctx)
 
@@ -319,11 +330,150 @@ def test_scenario_runner_loads_plain_yaml(tmp_path):
 
     yaml_path = tmp_path / "demo.yaml"
     yaml_path.write_text(
-        "map:\n  id: Town03\n"
-        "simulation:\n  fixed_delta_seconds: 0.1\n"
+        "map:\n  id: Town03\n" "simulation:\n  fixed_delta_seconds: 0.1\n"
     )
 
     runner = ScenarioRunner(str(yaml_path))
     assert runner._module is None
     assert runner.map_id == "Town03"
     assert runner.fixed_delta_seconds == 0.1
+
+
+# =============================================================================
+# ControlMode: per-actor gRPC vs TrafficManager dispatch
+# =============================================================================
+
+
+def test_resolve_grpc_driven_back_compat_unset():
+    """CONTROL_MODE_UNSPECIFIED falls back to 'EGO is gRPC, rest is TM'."""
+    from alpasim_grpc.v0 import traffic_pb2
+    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+
+    ego = traffic_pb2.ObjectTrajectory(object_id="EGO")
+    npc = traffic_pb2.ObjectTrajectory(object_id="npc-0")
+
+    assert resolve_grpc_driven(ego) is True
+    assert resolve_grpc_driven(npc) is False
+
+
+def test_resolve_grpc_driven_explicit_mode_wins():
+    """Explicit control_mode overrides the EGO-vs-rest heuristic."""
+    from alpasim_grpc.v0 import traffic_pb2
+    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+
+    # An NPC explicitly marked as GRPC_REPLAY (e.g. log-replay) -> True.
+    npc_replay = traffic_pb2.ObjectTrajectory(
+        object_id="npc-replay",
+        control_mode=traffic_pb2.CONTROL_MODE_GRPC_REPLAY,
+    )
+    # EGO explicitly marked as TM (e.g. open-loop traffic study) -> False.
+    ego_tm = traffic_pb2.ObjectTrajectory(
+        object_id="EGO",
+        control_mode=traffic_pb2.CONTROL_MODE_TRAFFIC_MANAGER,
+    )
+
+    assert resolve_grpc_driven(npc_replay) is True
+    assert resolve_grpc_driven(ego_tm) is False
+
+
+def test_apply_pose_update_targets_only_grpc_driven_actors(fake_carla):
+    """simulate()'s per-actor dispatch: gRPC actors get set_transform, TM ones don't."""
+    from alpasim_grpc.v0 import common_pb2, traffic_pb2
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+    )
+    ego_actor = _FakeActor(fake_carla.Transform())
+    tm_actor = _FakeActor(fake_carla.Transform())
+    session.register_actor("EGO", ego_actor, is_ego=True, is_grpc_driven=True)
+    session.register_actor("npc-0", tm_actor, is_grpc_driven=False)
+
+    def _update(object_id, x):
+        return traffic_pb2.ObjectTrajectoryUpdate(
+            object_id=object_id,
+            trajectory=common_pb2.Trajectory(
+                poses=[
+                    common_pb2.PoseAtTime(
+                        pose=common_pb2.Pose(
+                            vec=common_pb2.Vec3(x=x, y=0.0, z=0.0),
+                            quat=common_pb2.Quat(w=1.0),
+                        ),
+                        timestamp_us=0,
+                    )
+                ],
+            ),
+        )
+
+    session.apply_pose_update(_update("EGO", 10.0))
+    session.apply_pose_update(_update("npc-0", 20.0))
+    session.apply_pose_update(_update("unknown", 30.0))  # silently ignored
+
+    assert len(ego_actor.set_transform_calls) == 1
+    # TM-driven actor and unknown id must not be touched via gRPC.
+    assert tm_actor.set_transform_calls == []
+
+
+def test_resolve_grpc_driven_static_actor_is_never_grpc_driven():
+    """is_static=True objects ignore control_mode and are never gRPC-driven."""
+    from alpasim_grpc.v0 import traffic_pb2
+    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+
+    static_replay = traffic_pb2.ObjectTrajectory(
+        object_id="cone-0",
+        is_static=True,
+        control_mode=traffic_pb2.CONTROL_MODE_GRPC_REPLAY,
+    )
+    static_ego = traffic_pb2.ObjectTrajectory(object_id="EGO", is_static=True)
+
+    assert resolve_grpc_driven(static_replay) is False
+    assert resolve_grpc_driven(static_ego) is False
+
+
+def test_register_actor_disables_physics_for_grpc_driven(fake_carla):
+    """register_actor centralizes set_simulate_physics(False) for gRPC actors."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+    )
+    grpc_actor = _FakeActor(fake_carla.Transform())
+    tm_actor = _FakeActor(fake_carla.Transform())
+    static_actor = _FakeActor(fake_carla.Transform())
+
+    session.register_actor("ego", grpc_actor, is_grpc_driven=True)
+    session.register_actor("npc", tm_actor, is_grpc_driven=False)
+    session.register_actor("cone", static_actor, is_static=True, is_grpc_driven=True)
+
+    assert grpc_actor.physics_enabled is False
+    assert tm_actor.physics_enabled is True
+    # Static actors keep physics — register_actor must not flip them off.
+    assert static_actor.physics_enabled is True
+
+
+def test_register_actor_back_compat_defaults_grpc_driven_from_is_ego(fake_carla):
+    """Pre-ControlMode scenarios pass is_ego only; EGO must still receive updates."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+    )
+    ego = _FakeActor(fake_carla.Transform())
+    npc = _FakeActor(fake_carla.Transform())
+    session.register_actor("EGO", ego, is_ego=True)
+    session.register_actor("npc", npc)
+
+    assert session._actors_by_id["EGO"].is_grpc_driven is True
+    assert session._actors_by_id["npc"].is_grpc_driven is False

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """gRPC entry point for the Alpasim trafficsim micro-service.
 
 Implements the alpasim_grpc TrafficService contract backed by CARLA
@@ -15,8 +18,9 @@ import threading
 from concurrent import futures
 from typing import Optional
 
-import grpc
 from alpasim_grpc.v0 import common_pb2, traffic_pb2, traffic_pb2_grpc
+
+import grpc
 
 from . import __version__ as ts_version
 from .carla_session import CarlaSession
@@ -47,14 +51,18 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
         try:
             import carla  # type: ignore
         except ImportError:
-            logger.warning("carla Python API not importable; server will reject start_session")
+            logger.warning(
+                "carla Python API not importable; server will reject start_session"
+            )
             carla = None  # type: ignore
         self._carla_module = carla
         self._scenario_runner = ScenarioRunner(scenario_path) if scenario_path else None
 
     def start_session(self, request: traffic_pb2.TrafficSessionRequest, context):
         if self._carla_module is None:
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "carla Python API unavailable")
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION, "carla Python API unavailable"
+            )
             return common_pb2.SessionRequestStatus()  # unreachable; defensive
 
         with self._sessions_lock:
@@ -83,19 +91,22 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
 
         with self._sessions_lock:
             self._sessions[request.session_uuid] = session
-        logger.info("session %s started (%d actors)", request.session_uuid, len(session.actors))
+        logger.info(
+            "session %s started (%d actors)", request.session_uuid, len(session.actors)
+        )
         return common_pb2.SessionRequestStatus()
 
     def simulate(self, request: traffic_pb2.TrafficRequest, context):
         with self._sessions_lock:
             session = self._sessions.get(request.session_uuid)
         if session is None:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"unknown session {request.session_uuid}")
+            context.abort(
+                grpc.StatusCode.NOT_FOUND, f"unknown session {request.session_uuid}"
+            )
             return traffic_pb2.TrafficReturn()  # unreachable; defensive
 
         for update in request.object_trajectory_updates:
-            if update.object_id == "EGO":
-                session.apply_ego_update(update)
+            session.apply_pose_update(update)
 
         session.tick_until(request.time_query_us)
         return session.snapshot()
@@ -120,19 +131,33 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Alpasim trafficsim gRPC server (CARLA TrafficManager backend)")
-    parser.add_argument("--host", default="0.0.0.0", help="bind address for the gRPC server")
-    parser.add_argument("--port", type=int, required=True, help="bind port for the gRPC server")
-    parser.add_argument("--carla-host", default="physics-0", help="CARLA Server hostname")
-    parser.add_argument("--carla-port", type=int, default=2000, help="CARLA Server RPC port")
-    parser.add_argument("--tm-port", type=int, default=8000, help="CARLA TrafficManager port")
+    parser = argparse.ArgumentParser(
+        description="Alpasim trafficsim gRPC server (CARLA TrafficManager backend)"
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="bind address for the gRPC server"
+    )
+    parser.add_argument(
+        "--port", type=int, required=True, help="bind port for the gRPC server"
+    )
+    parser.add_argument(
+        "--carla-host", default="physics-0", help="CARLA Server hostname"
+    )
+    parser.add_argument(
+        "--carla-port", type=int, default=2000, help="CARLA Server RPC port"
+    )
+    parser.add_argument(
+        "--tm-port", type=int, default=8000, help="CARLA TrafficManager port"
+    )
     parser.add_argument(
         "--scenario",
         default=None,
         help="path to a Hydra YAML scenario file (autoware_carla_scenario format)",
     )
     parser.add_argument("--log-level", default="INFO", help="Python logging level")
-    parser.add_argument("--max-workers", type=int, default=8, help="gRPC thread-pool size")
+    parser.add_argument(
+        "--max-workers", type=int, default=8, help="gRPC thread-pool size"
+    )
     return parser.parse_args(argv)
 
 

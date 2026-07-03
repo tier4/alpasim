@@ -20,6 +20,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - python3.10 + venv for the runtime
 #   - libgl1 / libsdl2 needed by carla Python API client
 #   - git for autoware_carla_scenario git+subdirectory install
+#   - cmake + boost + eigen + geographic + pugixml to compile
+#     lanelet2_python_api_for_autoware from git source
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3.10 \
       python3.10-dev \
@@ -28,6 +30,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       git \
       build-essential \
+      cmake \
+      libboost-dev \
+      libboost-filesystem-dev \
+      libboost-iostreams-dev \
+      libboost-program-options-dev \
+      libboost-python-dev \
+      libboost-serialization-dev \
+      libboost-system-dev \
+      libboost-thread-dev \
+      libeigen3-dev \
+      libgeographic-dev \
+      libpugixml-dev \
+      librange-v3-dev \
       libgl1 \
       libsdl2-2.0-0 \
       libomp5 \

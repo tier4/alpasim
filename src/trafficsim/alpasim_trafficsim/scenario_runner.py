@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Scenario loader for the trafficsim micro-service.
 
 Supports two input shapes — both are read from the host-mounted scenarios
@@ -48,6 +51,26 @@ _PYTHON_SUFFIXES = {".py"}
 _YAML_SUFFIXES = {".yaml", ".yml"}
 
 
+def resolve_grpc_driven(obj: traffic_pb2.ObjectTrajectory) -> bool:
+    """Decide if `obj` should be driven by incoming gRPC ObjectTrajectoryUpdate.
+
+    - `is_static` objects are never gRPC-driven (no pose updates make sense).
+    - CONTROL_MODE_GRPC_REPLAY -> True
+    - CONTROL_MODE_TRAFFIC_MANAGER -> False
+    - CONTROL_MODE_UNSPECIFIED (default for clients that don't set it) ->
+      back-compat fallback: object_id == "EGO" is GRPC_REPLAY, every other
+      object is TRAFFIC_MANAGER.
+    """
+    if obj.is_static:
+        return False
+    mode = obj.control_mode
+    if mode == traffic_pb2.CONTROL_MODE_GRPC_REPLAY:
+        return True
+    if mode == traffic_pb2.CONTROL_MODE_TRAFFIC_MANAGER:
+        return False
+    return obj.object_id == "EGO"
+
+
 def _load_python_scenario(path: Path):
     """Dynamically import a `.py` file outside of PYTHONPATH.
 
@@ -55,7 +78,9 @@ def _load_python_scenario(path: Path):
     the host and restarting the container picks up the new code without any
     Python import-cache concerns.
     """
-    spec = importlib.util.spec_from_file_location(f"_alpasim_scenario_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(
+        f"_alpasim_scenario_{path.stem}", path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not build import spec for {path}")
     module = importlib.util.module_from_spec(spec)
@@ -119,7 +144,9 @@ class ScenarioRunner:
             mod_dt = getattr(self._module, "FIXED_DELTA_SECONDS", None)
             if mod_dt is not None:
                 return float(mod_dt)
-        return float(OmegaConf.select(self._cfg, "simulation.fixed_delta_seconds", default=0.05))
+        return float(
+            OmegaConf.select(self._cfg, "simulation.fixed_delta_seconds", default=0.05)
+        )
 
     def supported_map_ids(self) -> Iterable[str]:
         if self._module is not None:
@@ -147,7 +174,11 @@ class ScenarioRunner:
         self._load_world(session, carla_module)
 
         if self._module is not None:
-            params = OmegaConf.to_container(self._cfg, resolve=True) if len(self._cfg) else {}
+            params = (
+                OmegaConf.to_container(self._cfg, resolve=True)
+                if len(self._cfg)
+                else {}
+            )
             self._module.apply(
                 session=session,
                 request=request,
@@ -167,16 +198,23 @@ class ScenarioRunner:
         carla_module,
     ) -> None:
         blueprints = session.world.get_blueprint_library()
-        ego_filter = str(OmegaConf.select(self._cfg, "ego.blueprint", default="vehicle.tesla.model3"))
+        ego_filter = str(
+            OmegaConf.select(self._cfg, "ego.blueprint", default="vehicle.tesla.model3")
+        )
         traffic_filter = str(
-            OmegaConf.select(self._cfg, "traffic.default_blueprint", default="vehicle.audi.a2")
+            OmegaConf.select(
+                self._cfg, "traffic.default_blueprint", default="vehicle.audi.a2"
+            )
         )
         tm_cfg = OmegaConf.select(self._cfg, "traffic.manager", default=None)
 
         for obj in request.logged_object_trajectories:
             is_ego = obj.object_id == "EGO"
+            grpc_driven = resolve_grpc_driven(obj)
             spawn_pose = self._initial_world_transform(obj, carla_module)
-            blueprint = self._pick_blueprint(blueprints, ego_filter if is_ego else traffic_filter)
+            blueprint = self._pick_blueprint(
+                blueprints, ego_filter if is_ego else traffic_filter
+            )
             actor = session.world.try_spawn_actor(blueprint, spawn_pose)
             if actor is None:
                 raise RuntimeError(
@@ -184,9 +222,13 @@ class ScenarioRunner:
                     "ordered TrafficReturn requires every logged object to spawn"
                 )
             session.register_actor(
-                obj.object_id, actor, is_ego=is_ego, is_static=obj.is_static
+                obj.object_id,
+                actor,
+                is_ego=is_ego,
+                is_static=obj.is_static,
+                is_grpc_driven=grpc_driven,
             )
-            if not is_ego and not obj.is_static:
+            if not grpc_driven and not obj.is_static:
                 self._enrol_in_traffic_manager(session, actor, tm_cfg)
 
     # ----- helpers -----
@@ -200,7 +242,9 @@ class ScenarioRunner:
         current_basename = current.rsplit("/", 1)[-1]
         if current_basename == target_map:
             return
-        logger.info("loading CARLA map %s (was %s)", target_map, current_basename or "<none>")
+        logger.info(
+            "loading CARLA map %s (was %s)", target_map, current_basename or "<none>"
+        )
         session.world = session.client.load_world(target_map)
 
     @staticmethod
@@ -233,7 +277,11 @@ class ScenarioRunner:
             return
         speed_pct = float(OmegaConf.select(tm_cfg, "speed_difference_pct", default=0.0))
         if speed_pct:
-            session.traffic_manager.vehicle_percentage_speed_difference(actor, speed_pct)
-        distance_m = float(OmegaConf.select(tm_cfg, "distance_to_leading_vehicle_m", default=0.0))
+            session.traffic_manager.vehicle_percentage_speed_difference(
+                actor, speed_pct
+            )
+        distance_m = float(
+            OmegaConf.select(tm_cfg, "distance_to_leading_vehicle_m", default=0.0)
+        )
         if distance_m:
             session.traffic_manager.distance_to_leading_vehicle(actor, distance_m)

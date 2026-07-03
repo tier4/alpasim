@@ -14,6 +14,23 @@ service TrafficService {
     rpc get_metadata (common.Empty) returns (TrafficModuleMetadata);
 }
 
+// How TrafficService should drive a dynamic actor each simulate() tick.
+// is_static actors are unaffected by this enum -- they are spawned and never
+// updated regardless of the value.
+enum ControlMode {
+    // Back-compat default: object_id == "EGO" is treated as CONTROL_MODE_GRPC_REPLAY,
+    // everything else as CONTROL_MODE_TRAFFIC_MANAGER. Pre-existing clients
+    // that don't set this field keep working unchanged.
+    CONTROL_MODE_UNSPECIFIED = 0;
+    // Spawn the actor, hand it to CARLA TrafficManager autopilot. Incoming
+    // ObjectTrajectoryUpdate messages for this actor are ignored.
+    CONTROL_MODE_TRAFFIC_MANAGER = 1;
+    // Spawn the actor with physics disabled and overwrite its transform from
+    // ObjectTrajectoryUpdate on every simulate() call. Used for ego and for
+    // deterministic log-replay of recorded NPC trajectories.
+    CONTROL_MODE_GRPC_REPLAY = 2;
+}
+
 message ObjectTrajectory {
     common.AABB aabb = 1;
     // For all objects (including ego), points describe the active transform
@@ -22,6 +39,7 @@ message ObjectTrajectory {
     common.Trajectory trajectory = 2;
     string object_id = 3;
     bool is_static = 4;
+    ControlMode control_mode = 5;
 }
 
 message ObjectTrajectoryUpdate {

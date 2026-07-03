@@ -35,8 +35,14 @@ echo "[entrypoint] starting CARLA Server on port $CARLA_PORT"
 "$CARLA_ROOT/CarlaUE4.sh" -RenderOffScreen -nosound -carla-rpc-port="$CARLA_PORT" &
 pids+=("$!")
 
-echo "[entrypoint] starting physics_server: $*"
-uv run physics_server "$@" &
+if command -v physics_server >/dev/null 2>&1; then
+  physics_cmd=(physics_server)
+else
+  physics_cmd=(uv run physics_server)
+fi
+
+echo "[entrypoint] starting physics_server: ${physics_cmd[*]} $*"
+"${physics_cmd[@]}" "$@" &
 pids+=("$!")
 
 wait -n "${pids[@]}"

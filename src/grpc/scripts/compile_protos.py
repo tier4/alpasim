@@ -4,13 +4,24 @@
 
 """Compile proto files to Python modules."""
 import os
-from contextlib import chdir
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterator, Optional, Union
 
 from grpc_tools import command
 
 PathLike = Union[str, os.PathLike[str]]
+
+
+@contextmanager
+def _chdir(path: PathLike) -> Iterator[None]:
+    # contextlib.chdir is 3.11+; trafficsim is pinned to 3.10 (lanelet2).
+    prev = os.getcwd()
+    os.chdir(os.fspath(path))
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 
 def _default_root() -> Path:
@@ -40,6 +51,6 @@ def compile_protos(root: Optional[PathLike] = None) -> None:
     clean_proto_files(root_path)
 
     # Use the same grpc_tools.command API for exact compatibility
-    with chdir(root_path):
+    with _chdir(root_path):
         command.build_package_protos(".", strict_mode=True)
     print("Proto compilation completed successfully!")
