@@ -53,8 +53,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # CARLA server bundle (~7 GB) blows past the default 14 GB of free space
-      # on ubuntu-22.04. Free extra disk before building the physics image.
+      # CARLA server bundle (~7 GB tarball, ~15 GB extracted) plus the CUDA
+      # runtime layer and copied /opt/carla stage easily blow past the default
+      # 14 GB of free space on ubuntu-22.04. Free every optional bucket the
+      # action offers before starting the build.
       - name: Free disk space
         if: matrix.free_disk
         uses: jlumbroso/free-disk-space@main
@@ -63,8 +65,13 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
-          swap-storage: false
+          large-packages: true
+          swap-storage: true
+
+      # Drop the pre-baked Docker images the runner ships with (~5 GB).
+      - name: Prune pre-installed Docker images
+        if: matrix.free_disk
+        run: docker system prune --all --force
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
