@@ -40,6 +40,20 @@ CameraImages = dict[str, list[CameraFrame]]
 """Mapping from camera ID to temporal frames (length == context length)."""
 
 
+class RouteObservation(NamedTuple):
+    """Latest route submitted via ``submit_route``.
+
+    Waypoints are expressed in the rig frame at ``timestamp_us``. In alpasim's
+    default policy loop ``timestamp_us`` equals the current step's
+    ``step_start_us`` (i.e. rig_now), so waypoints are typically directly
+    usable without re-anchoring. Models that need to be robust to other
+    cadences should re-anchor via ``ego_pose_history``.
+    """
+
+    timestamp_us: int
+    waypoints_rig: np.ndarray  # (N, 3) float32
+
+
 @dataclass
 class PredictionInput:
     """All inputs needed for a single trajectory prediction.
@@ -53,6 +67,7 @@ class PredictionInput:
     speed: float  # m/s
     acceleration: float  # m/s²
     ego_pose_history: list[Any]  # list[PoseAtTime]
+    route: RouteObservation | None = None
 
 
 @dataclass

@@ -65,6 +65,7 @@ from .models.base import (
     ModelInputValidationError,
     ModelPrediction,
     PredictionInput,
+    RouteObservation,
 )
 from .models.manual_model import ManualModel
 from .navigation import determine_command_from_route
@@ -171,6 +172,10 @@ class Session:
     poses: list[PoseAtTime] = field(default_factory=list)
     dynamic_states: list[tuple[int, DynamicState]] = field(default_factory=list)
     current_command: DriveCommand = DriveCommand.STRAIGHT  # Default to straight
+    latest_route_waypoints_rig: np.ndarray | None = (
+        None  # (N, 3) float32, rig at latest_route_timestamp_us
+    )
+    latest_route_timestamp_us: int | None = None
 
     @staticmethod
     def create(
@@ -353,6 +358,27 @@ class Session:
             f"{dynamic_state.linear_velocity.z:.2f})"
         )
 
+    def store_route(self, route: Route) -> None:
+        """Cache raw route waypoints for models that need them.
+
+        Called from the submit_route RPC handler in addition to
+        :meth:`update_command_from_route` (which derives ``DriveCommand``).
+        Waypoints stay in the rig frame at ``route.timestamp_us``; in the
+        default policy loop this matches the current step's ``step_start_us``.
+        """
+        n = len(route.waypoints)
+        if n == 0:
+            self.latest_route_waypoints_rig = None
+            self.latest_route_timestamp_us = None
+            return
+        buf = np.empty((n, 3), dtype=np.float32)
+        for i, wp in enumerate(route.waypoints):
+            buf[i, 0] = wp.x
+            buf[i, 1] = wp.y
+            buf[i, 2] = wp.z
+        self.latest_route_waypoints_rig = buf
+        self.latest_route_timestamp_us = route.timestamp_us
+
     def update_command_from_route(
         self,
         route: Route,
@@ -444,6 +470,17 @@ def _create_model(
     model_cls = model_registry.get(cfg.model_type)
     return model_cls.from_config(
         cfg, device, camera_ids, context_length, output_frequency_hz
+    )
+
+
+def _session_to_route_obs(session: Session) -> RouteObservation | None:
+    """Build a ``RouteObservation`` from the session's cached route, if any."""
+    if session.latest_route_waypoints_rig is None:
+        return None
+    assert session.latest_route_timestamp_us is not None
+    return RouteObservation(
+        timestamp_us=session.latest_route_timestamp_us,
+        waypoints_rig=session.latest_route_waypoints_rig,
     )
 
 
@@ -723,6 +760,7 @@ class EgoDriverService(EgodriverServiceServicer):
                     speed=speed,
                     acceleration=acceleration,
                     ego_pose_history=job.session.poses,
+                    route=_session_to_route_obs(job.session),
                 )
             )
         return self._model.predict_batch(inputs)
@@ -824,15 +862,17 @@ class EgoDriverService(EgodriverServiceServicer):
         self, request: RouteRequest, context: grpc.aio.ServicerContext
     ) -> Empty:
         logger.debug("submit_route: waypoint count=%s", len(request.route.waypoints))
+        session = self._sessions[request.session_uuid]
+        session.store_route(request.route)
         if self._cfg.route is not None:
-            self._sessions[request.session_uuid].update_command_from_route(
+            session.update_command_from_route(
                 request.route,
                 self._cfg.route.use_waypoint_commands,
                 self._cfg.route.command_distance_threshold,
                 self._cfg.route.min_lookahead_distance,
             )
         else:
-            self._sessions[request.session_uuid].update_command_from_route(
+            session.update_command_from_route(
                 request.route,
                 use_waypoint_commands=False,
             )
