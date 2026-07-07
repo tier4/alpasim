@@ -57,6 +57,20 @@ LidarClouds = dict[str, list[LidarFrame]]
 """Mapping from lidar logical ID to temporal point clouds (length == context length)."""
 
 
+class RouteObservation(NamedTuple):
+    """Latest route submitted via ``submit_route``.
+
+    Waypoints are expressed in the rig frame at ``timestamp_us``. In alpasim's
+    default policy loop ``timestamp_us`` equals the current step's
+    ``step_start_us`` (i.e. rig_now), so waypoints are typically directly
+    usable without re-anchoring. Models that need to be robust to other
+    cadences should re-anchor via ``ego_pose_history``.
+    """
+
+    timestamp_us: int
+    waypoints_rig: np.ndarray  # (N, 3) float32
+
+
 @dataclass
 class PredictionInput:
     """All inputs needed for a single trajectory prediction.
@@ -71,6 +85,7 @@ class PredictionInput:
     acceleration: float  # m/s²
     ego_pose_history: list[Any]  # list[PoseAtTime]
     lidar_clouds: LidarClouds = field(default_factory=dict)
+    route: RouteObservation | None = None
 
 
 @dataclass

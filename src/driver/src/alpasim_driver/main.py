@@ -52,6 +52,7 @@ from alpasim_grpc.v0.egodriver_pb2_grpc import (
     add_EgodriverServiceServicer_to_server,
 )
 from alpasim_plugins.plugins import models as model_registry
+from alpasim_utils.geometry import quat_to_yaw, yaw_to_quat_components
 from omegaconf import OmegaConf
 from PIL import Image
 
@@ -68,6 +69,7 @@ from .models.base import (
     ModelInputValidationError,
     ModelPrediction,
     PredictionInput,
+    RouteObservation,
 )
 from .models.manual_model import ManualModel
 from .navigation import determine_command_from_route
@@ -104,22 +106,6 @@ def _get_external_ip() -> str:
         return "unknown"
 
 
-def _quat_to_yaw(quaternion: Quat) -> float:
-    """Extract the yaw component (rotation about +Z) from a quaternion."""
-
-    return np.arctan2(
-        2.0 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y),
-        1.0 - 2.0 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z),
-    )
-
-
-def _yaw_to_quat(yaw: float) -> Quat:
-    """Create a Z-only rotation quaternion from the provided yaw angle."""
-
-    half_yaw = 0.5 * yaw
-    return Quat(w=float(np.cos(half_yaw)), x=0.0, y=0.0, z=float(np.sin(half_yaw)))
-
-
 def _rig_est_offsets_to_local_positions(
     current_pose_in_local: PoseAtTime, offsets_in_rig: np.ndarray
 ) -> np.ndarray:
@@ -129,7 +115,7 @@ def _rig_est_offsets_to_local_positions(
     curr_y = current_pose_in_local.pose.vec.y
 
     curr_quat = current_pose_in_local.pose.quat
-    curr_yaw = _quat_to_yaw(curr_quat)
+    curr_yaw = quat_to_yaw(curr_quat)
 
     cos_yaw = np.cos(curr_yaw)
     sin_yaw = np.sin(curr_yaw)
@@ -177,6 +163,10 @@ class Session:
     current_command: DriveCommand = DriveCommand.STRAIGHT  # Default to straight
     lidar_caches: dict[str, PointCloudCache] = field(default_factory=dict)
     desired_lidars_logical_ids: set[str] = field(default_factory=set)
+    latest_route_waypoints_rig: np.ndarray | None = (
+        None  # (N, 3) float32, rig at latest_route_timestamp_us
+    )
+    latest_route_timestamp_us: int | None = None
 
     @staticmethod
     def create(
@@ -403,6 +393,27 @@ class Session:
             f"{dynamic_state.linear_velocity.z:.2f})"
         )
 
+    def store_route(self, route: Route) -> None:
+        """Cache raw route waypoints for models that need them.
+
+        Called from the submit_route RPC handler in addition to
+        :meth:`update_command_from_route` (which derives ``DriveCommand``).
+        Waypoints stay in the rig frame at ``route.timestamp_us``; in the
+        default policy loop this matches the current step's ``step_start_us``.
+        """
+        n = len(route.waypoints)
+        if n == 0:
+            self.latest_route_waypoints_rig = None
+            self.latest_route_timestamp_us = None
+            return
+        buf = np.empty((n, 3), dtype=np.float32)
+        for i, wp in enumerate(route.waypoints):
+            buf[i, 0] = wp.x
+            buf[i, 1] = wp.y
+            buf[i, 2] = wp.z
+        self.latest_route_waypoints_rig = buf
+        self.latest_route_timestamp_us = route.timestamp_us
+
     def update_command_from_route(
         self,
         route: Route,
@@ -494,6 +505,17 @@ def _create_model(
     model_cls = model_registry.get(cfg.model_type)
     return model_cls.from_config(
         cfg, device, camera_ids, context_length, output_frequency_hz
+    )
+
+
+def _session_to_route_obs(session: Session) -> RouteObservation | None:
+    """Build a ``RouteObservation`` from the session's cached route, if any."""
+    if session.latest_route_waypoints_rig is None:
+        return None
+    assert session.latest_route_timestamp_us is not None
+    return RouteObservation(
+        timestamp_us=session.latest_route_timestamp_us,
+        waypoints_rig=session.latest_route_waypoints_rig,
     )
 
 
@@ -801,6 +823,7 @@ class EgoDriverService(EgodriverServiceServicer):
                     acceleration=acceleration,
                     ego_pose_history=job.session.poses,
                     lidar_clouds=self._prepare_lidar_clouds(job.session),
+                    route=_session_to_route_obs(job.session),
                 )
             )
         return self._model.predict_batch(inputs)
@@ -951,15 +974,17 @@ class EgoDriverService(EgodriverServiceServicer):
         self, request: RouteRequest, context: grpc.aio.ServicerContext
     ) -> Empty:
         logger.debug("submit_route: waypoint count=%s", len(request.route.waypoints))
+        session = self._sessions[request.session_uuid]
+        session.store_route(request.route)
         if self._cfg.route is not None:
-            self._sessions[request.session_uuid].update_command_from_route(
+            session.update_command_from_route(
                 request.route,
                 self._cfg.route.use_waypoint_commands,
                 self._cfg.route.command_distance_threshold,
                 self._cfg.route.min_lookahead_distance,
             )
         else:
-            self._sessions[request.session_uuid].update_command_from_route(
+            session.update_command_from_route(
                 request.route,
                 use_waypoint_commands=False,
             )
@@ -1135,19 +1160,20 @@ class EgoDriverService(EgodriverServiceServicer):
         timestamps_us = (time_now_us + steps * time_delta_us).tolist()
 
         # Transform model headings from rig frame to local frame
-        current_yaw = _quat_to_yaw(current_pose.pose.quat)
+        current_yaw = quat_to_yaw(current_pose.pose.quat)
         local_yaws = prediction.headings + current_yaw
 
         for local_xy, yaw, timestamp_us in zip(
             local_positions, local_yaws, timestamps_us, strict=True
         ):
             local_x, local_y = map(float, local_xy)
+            quat_w, quat_x, quat_y, quat_z = yaw_to_quat_components(float(yaw))
 
             trajectory.poses.append(
                 PoseAtTime(
                     pose=Pose(
                         vec=Vec3(x=local_x, y=local_y, z=curr_z),
-                        quat=_yaw_to_quat(float(yaw)),
+                        quat=Quat(w=quat_w, x=quat_x, y=quat_y, z=quat_z),
                     ),
                     timestamp_us=timestamp_us,
                 )
