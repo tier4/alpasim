@@ -37,6 +37,9 @@ class InferenceConfig:
     subsample_factor: int = 1
     context_length: int | None = None  # Override model's default context length
     output_frequency_hz: int = 10  # Frequency of trajectory decisions (Hz)
+    use_lidars: list[str] = field(default_factory=list)
+    lidar_subsample_factor: int = 1
+    lidar_context_length: int | None = None  # Defaults to `context_length` when None
 
 
 @dataclass

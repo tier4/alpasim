@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, NamedTuple
 
@@ -40,6 +40,23 @@ CameraImages = dict[str, list[CameraFrame]]
 """Mapping from camera ID to temporal frames (length == context length)."""
 
 
+class LidarFrame(NamedTuple):
+    """A single LiDAR point cloud observation with timestamp.
+
+    Points are in the end-of-spin lidar frame; matches the wire format of
+    ``RolloutLidarPointCloud.LidarPointCloud``.
+    """
+
+    timestamp_us: int
+    points_xyz: np.ndarray  # (N, 3) float32
+    intensities: np.ndarray  # (N,) float32 in [0, 1]
+    ring_ids: np.ndarray  # (N,) uint16
+
+
+LidarClouds = dict[str, list[LidarFrame]]
+"""Mapping from lidar logical ID to temporal point clouds (length == context length)."""
+
+
 @dataclass
 class PredictionInput:
     """All inputs needed for a single trajectory prediction.
@@ -53,6 +70,7 @@ class PredictionInput:
     speed: float  # m/s
     acceleration: float  # m/s²
     ego_pose_history: list[Any]  # list[PoseAtTime]
+    lidar_clouds: LidarClouds = field(default_factory=dict)
 
 
 @dataclass
