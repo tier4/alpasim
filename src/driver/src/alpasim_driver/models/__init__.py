@@ -10,6 +10,8 @@ from .base import (
     CameraFrame,
     CameraImages,
     DriveCommand,
+    LidarClouds,
+    LidarFrame,
     ModelPrediction,
     PredictionInput,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "CameraFrame",
     "CameraImages",
     "DriveCommand",
+    "LidarClouds",
+    "LidarFrame",
     "ManualModel",
     "ModelPrediction",
     "PredictionInput",

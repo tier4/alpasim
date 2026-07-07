@@ -43,6 +43,7 @@ from alpasim_grpc.v0.egodriver_pb2 import (
     GroundTruthRequest,
     RolloutCameraImage,
     RolloutEgoTrajectory,
+    RolloutLidarPointCloud,
     Route,
     RouteRequest,
 )
@@ -62,12 +63,15 @@ from .models import DriveCommand
 from .models.base import (
     BaseTrajectoryModel,
     CameraImages,
+    LidarClouds,
+    LidarFrame,
     ModelInputValidationError,
     ModelPrediction,
     PredictionInput,
 )
 from .models.manual_model import ManualModel
 from .navigation import determine_command_from_route
+from .point_cloud_cache import PointCloudCache
 from .rectification import (
     FthetaToPinholeRectifier,
     build_ftheta_rectifier_for_resolution,
@@ -171,6 +175,8 @@ class Session:
     poses: list[PoseAtTime] = field(default_factory=list)
     dynamic_states: list[tuple[int, DynamicState]] = field(default_factory=list)
     current_command: DriveCommand = DriveCommand.STRAIGHT  # Default to straight
+    lidar_caches: dict[str, PointCloudCache] = field(default_factory=dict)
+    desired_lidars_logical_ids: set[str] = field(default_factory=set)
 
     @staticmethod
     def create(
@@ -178,6 +184,8 @@ class Session:
         cfg: DriverConfig,
         context_length: int,
         subsample_factor: int = 1,
+        lidar_context_length: int | None = None,
+        lidar_subsample_factor: int = 1,
     ) -> Session:
         """Create a new driver session.
 
@@ -251,6 +259,19 @@ class Session:
                 subsample_factor=subsample_factor,
             )
 
+        # Create a PointCloudCache for each desired lidar
+        desired_lidars_logical_ids: set[str] = set(cfg.inference.use_lidars)
+        effective_lidar_context = (
+            lidar_context_length if lidar_context_length is not None else context_length
+        )
+        lidar_caches: dict[str, PointCloudCache] = {}
+        for lidar_id in cfg.inference.use_lidars:
+            lidar_caches[lidar_id] = PointCloudCache(
+                context_length=effective_lidar_context,
+                lidar_id=lidar_id,
+                subsample_factor=lidar_subsample_factor,
+            )
+
         session = Session(
             uuid=request.session_uuid,
             seed=request.random_seed,
@@ -261,6 +282,8 @@ class Session:
             camera_specs=camera_specs,
             rectification_cfg=cfg.rectification,
             rectifiers=rectifiers,
+            lidar_caches=lidar_caches,
+            desired_lidars_logical_ids=desired_lidars_logical_ids,
         )
 
         return session
@@ -274,6 +297,33 @@ class Session:
                 f"Camera {logical_id} not in desired cameras: {list(self.frame_caches.keys())}"
             )
         self.frame_caches[logical_id].add_image(timestamp_us, image_tensor)
+
+    def add_point_cloud(
+        self,
+        logical_id: str,
+        timestamp_us: int,
+        points_xyz: np.ndarray,
+        intensities: np.ndarray,
+        ring_ids: np.ndarray,
+    ) -> None:
+        """Add a LiDAR point cloud observation for a specific lidar sensor."""
+        if logical_id not in self.lidar_caches:
+            raise ValueError(
+                f"LiDAR {logical_id} not in desired lidars: "
+                f"{list(self.lidar_caches.keys())}"
+            )
+        self.lidar_caches[logical_id].add_point_cloud(
+            timestamp_us, points_xyz, intensities, ring_ids
+        )
+
+    def all_lidars_ready(self) -> bool:
+        """Check if all configured lidars have enough clouds for inference.
+
+        Returns True when no lidars are configured (they are optional inputs).
+        """
+        if not self.lidar_caches:
+            return True
+        return all(cache.has_enough_frames() for cache in self.lidar_caches.values())
 
     def all_cameras_ready(self) -> bool:
         """Check if all cameras have enough frames for inference."""
@@ -491,11 +541,18 @@ class EgoDriverService(EgodriverServiceServicer):
             else self._model.context_length
         )
 
+        self._lidar_context_length = cfg.inference.lidar_context_length
+        self._lidar_subsample_factor = cfg.inference.lidar_subsample_factor
+
         logger.info(
-            "Initialized %s model with %d cameras, context_length=%d",
+            "Initialized %s model with %d cameras, context_length=%d, "
+            "lidars=%s (context_length=%s, subsample=%d)",
             cfg.model.model_type,
             self._model.num_cameras,
             self._context_length,
+            list(cfg.inference.use_lidars),
+            self._lidar_context_length,
+            self._lidar_subsample_factor,
         )
 
         self._max_batch_size = cfg.inference.max_batch_size
@@ -664,6 +721,26 @@ class EgoDriverService(EgodriverServiceServicer):
 
         return camera_images
 
+    def _prepare_lidar_clouds(self, session: Session) -> LidarClouds:
+        """Collect the latest point clouds for each configured lidar.
+
+        Returns an empty dict when no lidars are configured. List length per
+        lidar equals its configured context length.
+        """
+        lidar_clouds: LidarClouds = {}
+        for lidar_id, cache in session.lidar_caches.items():
+            entries = cache.latest_frame_entries(cache.context_length)
+            lidar_clouds[lidar_id] = [
+                LidarFrame(
+                    timestamp_us=e.timestamp_us,
+                    points_xyz=e.points_xyz,
+                    intensities=e.intensities,
+                    ring_ids=e.ring_ids,
+                )
+                for e in entries
+            ]
+        return lidar_clouds
+
     def _maybe_save_rectification_debug_image(
         self,
         pre_image: Image.Image,
@@ -723,6 +800,7 @@ class EgoDriverService(EgodriverServiceServicer):
                     speed=speed,
                     acceleration=acceleration,
                     ego_pose_history=job.session.poses,
+                    lidar_clouds=self._prepare_lidar_clouds(job.session),
                 )
             )
         return self._model.predict_batch(inputs)
@@ -748,6 +826,8 @@ class EgoDriverService(EgodriverServiceServicer):
             self._cfg,
             self._context_length,
             subsample_factor=self._cfg.inference.subsample_factor,
+            lidar_context_length=self._lidar_context_length,
+            lidar_subsample_factor=self._lidar_subsample_factor,
         )
         self._sessions[request.session_uuid] = session
 
@@ -803,6 +883,53 @@ class EgoDriverService(EgodriverServiceServicer):
         return Empty()
 
     @async_log_call
+    async def submit_lidar_observation(
+        self, request: RolloutLidarPointCloud, context: grpc.aio.ServicerContext
+    ) -> Empty:
+        cloud = request.lidar_point_cloud
+        session = self._sessions[request.session_uuid]
+        if cloud.logical_id not in session.desired_lidars_logical_ids:
+            logger.debug(
+                "Ignoring lidar %s: not in desired lidars %s",
+                cloud.logical_id,
+                sorted(session.desired_lidars_logical_ids),
+            )
+            return Empty()
+
+        num_points = int(cloud.num_points)
+        if num_points == 0:
+            points_xyz = np.zeros((0, 3), dtype=np.float32)
+            intensities = np.zeros((0,), dtype=np.float32)
+            ring_ids = np.zeros((0,), dtype=np.uint16)
+        else:
+            points_xyz = np.frombuffer(
+                cloud.point_xyzs_buffer, dtype=np.float32
+            ).reshape(num_points, 3)
+            intensities = np.frombuffer(
+                cloud.point_intensities_buffer, dtype=np.float32
+            )
+            ring_ids = np.frombuffer(cloud.point_ring_ids_buffer, dtype="<u2")
+            if intensities.shape[0] != num_points:
+                raise ValueError(
+                    f"LiDAR {cloud.logical_id}: intensities size "
+                    f"{intensities.shape[0]} != num_points {num_points}"
+                )
+            if ring_ids.shape[0] != num_points:
+                raise ValueError(
+                    f"LiDAR {cloud.logical_id}: ring_ids size "
+                    f"{ring_ids.shape[0]} != num_points {num_points}"
+                )
+
+        session.add_point_cloud(
+            cloud.logical_id,
+            cloud.frame_end_us,
+            points_xyz,
+            intensities,
+            ring_ids,
+        )
+        return Empty()
+
+    @async_log_call
     async def submit_egomotion_observation(
         self, request: RolloutEgoTrajectory, context: grpc.aio.ServicerContext
     ) -> Empty:
@@ -846,8 +973,8 @@ class EgoDriverService(EgodriverServiceServicer):
         return Empty()
 
     def _check_frames_ready(self, session: Session) -> bool:
-        """Check if all cameras have enough frames for inference."""
-        return session.all_cameras_ready()
+        """Check if all cameras (and lidars, if configured) have enough frames."""
+        return session.all_cameras_ready() and session.all_lidars_ready()
 
     @async_log_call
     async def drive(
