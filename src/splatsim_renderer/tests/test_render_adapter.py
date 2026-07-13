@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Unit tests for render_adapter conversions.
 
 These run without torch / splatsim / CUDA — pure numpy + PIL.
@@ -11,14 +14,13 @@ import math
 import numpy as np
 import pytest
 from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
-from PIL import Image
-
 from alpasim_splatsim_renderer.render_adapter import (
     camera_spec_to_intrinsics,
     encode_image,
     pose_pair_to_viewmat,
     pose_to_viewmat,
 )
+from PIL import Image
 
 
 def _opencv_pinhole_spec(fx=500.0, fy=510.0, cx=480.0, cy=270.0, w=960, h=540):
@@ -97,7 +99,9 @@ def test_pose_90deg_yaw_yields_orthonormal_inverse():
 def test_pose_pair_uses_start_pose():
     start = common_pb2.Pose(vec=common_pb2.Vec3(x=5.0), quat=common_pb2.Quat(w=1.0))
     end = common_pb2.Pose(vec=common_pb2.Vec3(x=99.0), quat=common_pb2.Quat(w=1.0))
-    viewmat = pose_pair_to_viewmat(sensorsim_pb2.PosePair(start_pose=start, end_pose=end))
+    viewmat = pose_pair_to_viewmat(
+        sensorsim_pb2.PosePair(start_pose=start, end_pose=end)
+    )
     # Translation comes from start_pose: cam at x=5 -> world->cam tx=-5.
     assert viewmat[0, 3] == pytest.approx(-5.0)
 
@@ -167,3 +171,39 @@ def test_identity_quat_takes_fast_path():
     )
     viewmat = pose_to_viewmat(pose)
     np.testing.assert_array_equal(viewmat[:3, :3], np.eye(3, dtype=np.float32))
+
+
+def test_world_origin_offset_shifts_camera_position():
+    """``world_origin`` shifts the camera's world position before inversion.
+
+    Camera at world (10, 20, 30) with world_origin (10, 20, 30) should end up
+    at the tile-local origin, i.e. viewmat translation = 0.
+    """
+    from alpasim_splatsim_renderer.render_adapter import pose_to_viewmat
+
+    pose = common_pb2.Pose(
+        vec=common_pb2.Vec3(x=10.0, y=20.0, z=30.0),
+        quat=common_pb2.Quat(w=1.0),
+    )
+    viewmat = pose_to_viewmat(
+        pose, world_origin=np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    )
+    np.testing.assert_allclose(viewmat[:3, 3], np.zeros(3), atol=1e-6)
+
+
+def test_pose_to_sensor_to_world_is_inverse_of_viewmat():
+    """``pose_to_sensor_to_world`` returns the un-inverted sensor→world 4x4."""
+    from alpasim_splatsim_renderer.render_adapter import (
+        pose_to_sensor_to_world,
+        pose_to_viewmat,
+    )
+
+    half = math.pi / 4
+    pose = common_pb2.Pose(
+        vec=common_pb2.Vec3(x=1.0, y=2.0, z=3.0),
+        quat=common_pb2.Quat(w=math.cos(half), x=0.0, y=0.0, z=math.sin(half)),
+    )
+    s2w = pose_to_sensor_to_world(pose)
+    w2s = pose_to_viewmat(pose)
+    # s2w and w2s should be inverse of each other.
+    np.testing.assert_allclose(s2w @ w2s, np.eye(4, dtype=np.float32), atol=1e-6)
