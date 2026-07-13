@@ -1,131 +1,133 @@
-"""Build a splatsim ``Scene`` from a Cesium 3D Tiles directory.
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
 
-Layout we expect on the bind-mounted host directory:
+"""USDZ scene loader for the splatsim renderer.
 
-    /mnt/cesium-tiles/
-      ├── tileset.json            # Cesium 3D Tiles root
-      ├── ...                     # tile payload (.b3dm / .pnts / .glb)
-      └── scene.yaml              # optional: bypass the default config
-
-If ``scene.yaml`` is present it's passed straight to ``Scene.from_config`` so
-the user can override the renderer block (resolution, device, SH on/off,
-extra rigid_bodies). Otherwise we synthesise a minimal config that points
-splatsim at ``tileset.json`` with no rigid bodies — the static Cesium
-background only.
-
-Dynamic objects from the gRPC requests are intentionally ignored (NOP).
+Loads a splatsim scene from a single ``.usdz`` file (3D Gaussian tileset with
+``EXT_3dgs_spz`` chunks) via ``SceneConfig.from_source`` from splatsim v0.2.0,
+and exposes the tile-local / ECEF metadata that the RPC layer needs to
+transform world-frame sensor poses into the tile-local frame the renderer
+operates in.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 from pathlib import Path
-from typing import Any, Optional
 
-import yaml
+import numpy as np
+import torch
+from splatsim import Renderer, Scene
+from splatsim.dataclass.scene_config import SceneConfig
 
 logger = logging.getLogger(__name__)
 
 
-def _synthesise_scene_yaml(tiles_dir: Path, resolution: tuple[int, int]) -> Path:
-    """Write a deterministic scene config alongside the tileset.
+class SceneHandle:
+    """Owns the splatsim Scene + Renderer for a single loaded USDZ.
 
-    Living next to the tileset (rather than in /tmp) means the file is
-    discoverable for debugging, gets cleaned up when the bind-mounted host
-    directory is, and is overwritten in place on container restart instead
-    of leaking new copies each time the server boots.
+    One container hosts one scene: the USDZ path is fixed for the lifetime of
+    the process. Poses in world (map) frame are translated into the
+    tile-local frame using ``tile_local_centroid`` before rendering.
     """
-    tileset = tiles_dir / "tileset.json"
-    if not tileset.exists():
-        raise FileNotFoundError(
-            f"Cesium tileset not found at {tileset}; pass a directory containing "
-            "tileset.json or provide a scene.yaml override."
+
+    def __init__(
+        self,
+        usdz_path: Path,
+        default_resolution: tuple[int, int] = (960, 540),
+        device: str = "cuda",
+    ) -> None:
+        if not usdz_path.is_file() or usdz_path.suffix.lower() != ".usdz":
+            raise FileNotFoundError(
+                f"Splatsim scene must point at a .usdz file: {usdz_path}"
+            )
+
+        self._device = device
+        self._default_resolution = (
+            int(default_resolution[0]),
+            int(default_resolution[1]),
         )
 
-    cfg = {
-        "background_tileset": str(tileset),
-        "use_sh": False,
-        "rigid_bodies": [],
-        "renderer": {
-            "width": int(resolution[0]),
-            "height": int(resolution[1]),
-            "device": "cuda",
-        },
-    }
-    target = tiles_dir / ".splatsim_scene_synthesised.yaml"
-    with target.open("w") as fh:
-        yaml.safe_dump(cfg, fh)
-    logger.info("synthesised splatsim scene config at %s for %s", target, tileset)
-    return target
+        cfg = SceneConfig.from_source(usdz_path)
+        # Override render resolution / device before instantiating the
+        # Renderer so the wizard config is authoritative.
+        cfg.renderer.width = self._default_resolution[0]
+        cfg.renderer.height = self._default_resolution[1]
+        cfg.renderer.device = device
 
+        logger.info("loading splatsim scene from %s", usdz_path)
+        self._scene = Scene.from_config(cfg, device=torch.device(device))
+        self._config = cfg
 
-def resolve_scene_yaml(tiles_dir: Path, resolution: tuple[int, int]) -> Path:
-    """Find or synthesise the YAML splatsim's Scene.from_config will consume."""
-    override = tiles_dir / "scene.yaml"
-    if override.exists():
-        logger.info("using scene.yaml override at %s", override)
-        return override
-    return _synthesise_scene_yaml(tiles_dir, resolution)
-
-
-class SceneHandle:
-    """Lazy splatsim scene loader.
-
-    splatsim + torch + CUDA are heavy to import, so we defer the actual
-    construction until the first render call. This keeps unit tests free of
-    the torch dependency and means we can boot the gRPC server without a GPU
-    if the host doesn't have one yet (handy for smoke testing).
-    """
-
-    def __init__(self, tiles_dir: Path, default_resolution: tuple[int, int]) -> None:
-        self._tiles_dir = tiles_dir
-        self._default_resolution = default_resolution
-        self._scene: Any = None
-        self._renderer: Any = None
-        self._device: Any = None
-        # gRPC server uses ThreadPoolExecutor, so concurrent first-render
-        # callers could otherwise both pass the `_scene is None` check and
-        # initialise the scene twice. Double-checked locking guards this.
-        self._init_lock = threading.Lock()
-
-    def _ensure_loaded(self) -> None:
-        if self._scene is not None:
-            return
-        with self._init_lock:
-            if self._scene is not None:
-                return
-            # Heavy imports kept local so server.py can import this module on
-            # a box with no CUDA / no torch (unit tests).
-            import torch  # type: ignore
-            from splatsim.renderer import Renderer  # type: ignore
-            from splatsim.scene import Scene  # type: ignore
-
-            yaml_path = resolve_scene_yaml(self._tiles_dir, self._default_resolution)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            scene = Scene.from_config(str(yaml_path), device=device)
-            renderer = Renderer(
-                width=self._default_resolution[0],
-                height=self._default_resolution[1],
-                device=device,
+        # Cache ECEF metadata for the RPC layer. ``tile_local_centroid`` is a
+        # torch tensor on ``device``; the RPC layer expects host-side numpy so
+        # it can compose translations with pose data coming off the wire.
+        bg = self._scene.background
+        if bg is None:
+            raise RuntimeError(
+                f"Loaded scene has no Background; USDZ may be missing a tileset: {usdz_path}"
             )
-            # Publish all three at once so concurrent readers that pass the
-            # fast-path `_scene is not None` check see a consistent set.
-            self._device = device
-            self._renderer = renderer
-            self._scene = scene
-            logger.info("splatsim scene loaded (device=%s)", self._device)
+        self._tile_local_centroid = (
+            bg.tile_local_centroid.detach().cpu().numpy().astype(np.float32)
+        )
+        self._ecef_translation = np.asarray(bg.ecef_translation, dtype=np.float64)
+        self._ecef_rotation = np.asarray(bg.ecef_rotation, dtype=np.float64)
 
-    def render(self, viewmat_np, k_np):
-        """Render a single frame and return an ndarray (H, W, 3) float32 [0, 1]."""
-        self._ensure_loaded()
-        import torch  # type: ignore
+        self._renderer = Renderer(
+            width=self._default_resolution[0],
+            height=self._default_resolution[1],
+            device=device,
+            background_color=tuple(cfg.renderer.background_color),
+            near_plane=cfg.renderer.near_plane,
+            far_plane=cfg.renderer.far_plane,
+            radius_clip=cfg.renderer.radius_clip,
+        )
 
-        viewmat = torch.from_numpy(viewmat_np).to(self._device)
-        K = torch.from_numpy(k_np).to(self._device)
-        rgb = self._renderer.render(viewmat, K, scene=self._scene)
-        return rgb.detach().to("cpu").numpy()
+    # ----- properties -----
 
     @property
-    def device(self) -> Optional[Any]:
+    def scene(self) -> Scene:
+        return self._scene
+
+    @property
+    def config(self) -> SceneConfig:
+        return self._config
+
+    @property
+    def default_resolution(self) -> tuple[int, int]:
+        return self._default_resolution
+
+    @property
+    def device(self) -> str:
         return self._device
+
+    @property
+    def tile_local_centroid(self) -> np.ndarray:
+        """(3,) float32 offset to subtract from world-frame positions."""
+        return self._tile_local_centroid
+
+    @property
+    def ecef_translation(self) -> np.ndarray:
+        """(3,) float64 ECEF translation of the tile root (metadata only)."""
+        return self._ecef_translation
+
+    @property
+    def ecef_rotation(self) -> np.ndarray:
+        """(3, 3) float64 ECEF rotation of the tile root (metadata only)."""
+        return self._ecef_rotation
+
+    # ----- rendering -----
+
+    def render(self, viewmat_np: np.ndarray, k_np: np.ndarray) -> np.ndarray:
+        """Render RGB frame.
+
+        ``viewmat_np`` must already be in the tile-local frame (i.e. the RPC
+        layer has subtracted ``tile_local_centroid`` from the world-frame
+        position before inverting to world-to-camera).
+
+        Returns (H, W, 3) float32 in [0, 1].
+        """
+        viewmat = torch.from_numpy(viewmat_np).to(self._device)
+        k = torch.from_numpy(k_np).to(self._device)
+        rgb = self._renderer.render(viewmat, k, scene=self._scene)
+        return rgb.detach().to("cpu").numpy()

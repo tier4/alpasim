@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Pure-numpy conversions between alpasim sensorsim proto and splatsim arrays.
 
 Kept torch-free so unit tests run on the standard alpasim_grpc test deps.
@@ -87,33 +90,75 @@ def _quat_to_rotation_matrix(qw: float, qx: float, qy: float, qz: float) -> np.n
     qw, qx, qy, qz = qw / norm, qx / norm, qy / norm, qz / norm
     return np.array(
         [
-            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
-            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
-            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+            [
+                1 - 2 * (qy * qy + qz * qz),
+                2 * (qx * qy - qz * qw),
+                2 * (qx * qz + qy * qw),
+            ],
+            [
+                2 * (qx * qy + qz * qw),
+                1 - 2 * (qx * qx + qz * qz),
+                2 * (qy * qz - qx * qw),
+            ],
+            [
+                2 * (qx * qz - qy * qw),
+                2 * (qy * qz + qx * qw),
+                1 - 2 * (qx * qx + qy * qy),
+            ],
         ],
         dtype=np.float32,
     )
 
 
-def pose_to_viewmat(pose) -> np.ndarray:
+def pose_to_viewmat(pose, world_origin: np.ndarray | None = None) -> np.ndarray:
     """Convert a common.Pose (camera-in-world) to a 4x4 world->camera viewmat.
 
     Alpasim's `common.Pose` convention is "translation then rotation",
     interpreted as the camera's pose in the world frame (camera-to-world).
     splatsim's `Renderer.render` wants the inverse — world-to-camera. The
     inverse of a rigid transform ``[R | t]`` is ``[R^T | -R^T t]``.
+
+    ``world_origin`` is subtracted from the position before inversion so
+    that world-frame poses land in splatsim's tile-local frame (the frame
+    ``Renderer.render`` actually operates in). Pass ``Background.tile_local_centroid``
+    from the loaded scene here.
     """
     R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
     t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
+    if world_origin is not None:
+        t = t - np.asarray(world_origin, dtype=np.float32)
     viewmat = np.eye(4, dtype=np.float32)
     viewmat[:3, :3] = R.T
     viewmat[:3, 3] = -R.T @ t
     return viewmat
 
 
-def pose_pair_to_viewmat(pose_pair: sensorsim_pb2.PosePair) -> np.ndarray:
+def pose_pair_to_viewmat(
+    pose_pair: sensorsim_pb2.PosePair,
+    world_origin: np.ndarray | None = None,
+) -> np.ndarray:
     """Use the start_pose; rolling-shutter (end_pose) is not modelled yet."""
-    return pose_to_viewmat(pose_pair.start_pose)
+    return pose_to_viewmat(pose_pair.start_pose, world_origin=world_origin)
+
+
+def pose_to_sensor_to_world(
+    pose,
+    world_origin: np.ndarray | None = None,
+) -> np.ndarray:
+    """Convert a common.Pose (camera-in-world) to a 4x4 sensor-to-tile-local matrix.
+
+    Used by the LiDAR path (splatsim's ``LidarRenderer.render`` takes
+    ``sensor_to_world`` directly, not its inverse). Applies the same
+    ``world_origin`` offset as :func:`pose_to_viewmat`.
+    """
+    R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
+    t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
+    if world_origin is not None:
+        t = t - np.asarray(world_origin, dtype=np.float32)
+    m = np.eye(4, dtype=np.float32)
+    m[:3, :3] = R
+    m[:3, 3] = t
+    return m
 
 
 def encode_image(

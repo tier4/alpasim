@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """gRPC server-level tests with a stub SceneHandle.
 
 The real SceneHandle pulls in torch + splatsim + CUDA; for unit tests we
@@ -7,26 +10,35 @@ inject a stub that returns a constant RGB array.
 from __future__ import annotations
 
 import io
+from unittest import mock
 
 import numpy as np
 import pytest
 from alpasim_grpc.v0 import common_pb2, sensorsim_pb2
 from PIL import Image
-from unittest import mock
 
 
 class _StubScene:
     """SceneHandle stand-in that returns a fixed gradient image."""
 
-    def __init__(self, h=8, w=12):
+    def __init__(self, h=8, w=12, centroid=(0.0, 0.0, 0.0)):
         self._h = h
         self._w = w
         self.render_calls = []
+        self._centroid = np.asarray(centroid, dtype=np.float32)
+        self.device = "cpu"
+        self.scene = mock.Mock(name="stub_scene")
 
     def render(self, viewmat, K):
         self.render_calls.append((viewmat.copy(), K.copy()))
         x = np.linspace(0.0, 1.0, self._w, dtype=np.float32)
-        return np.broadcast_to(x[None, :, None], (self._h, self._w, 3)).astype(np.float32)
+        return np.broadcast_to(x[None, :, None], (self._h, self._w, 3)).astype(
+            np.float32
+        )
+
+    @property
+    def tile_local_centroid(self):
+        return self._centroid
 
 
 @pytest.fixture
@@ -90,12 +102,81 @@ def test_render_rgb_unsupported_camera_aborts(servicer_with_stub):
     ctx.abort.assert_called_once()
 
 
-def test_render_lidar_is_nop(servicer_with_stub):
-    servicer, _ = servicer_with_stub
+def _make_lidar_request(device_type=sensorsim_pb2.LidarDeviceType.PANDAR128):
     req = sensorsim_pb2.LidarRenderRequest(scene_id="test-scene")
-    resp = servicer.render_lidar(req, context=mock.Mock())
-    assert resp.num_points == 0
-    assert list(resp.point_xyzs) == []
+    req.lidar_config.lidar_type = device_type
+    req.sensor_pose.CopyFrom(_identity_pose_pair())
+    return req
+
+
+def test_render_lidar_pandar128_returns_points(servicer_with_stub, monkeypatch):
+    servicer, _ = servicer_with_stub
+
+    def fake_render(scene_handle, base_to_world_np, device_type):
+        xyz = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+        intensity = np.array([0.5, 0.8], dtype=np.float32)
+        ring_ids = np.array([0, 7], dtype=np.uint16)
+        return xyz, intensity, ring_ids
+
+    monkeypatch.setattr(
+        "alpasim_splatsim_renderer.server.render_lidar_panorama_from_scene",
+        fake_render,
+    )
+    resp = servicer.render_lidar(_make_lidar_request(), context=mock.Mock())
+    assert resp.num_points == 2
+    assert len(resp.point_xyzs_buffer) == 2 * 3 * 4  # 2 pts * 3 floats * float32
+    assert len(resp.point_intensities_buffer) == 2 * 4
+    assert len(resp.point_ring_ids_buffer) == 2 * 2  # 2 pts * uint16
+
+
+def test_render_lidar_at128_aborts_unimplemented(servicer_with_stub):
+    servicer, _ = servicer_with_stub
+    req = _make_lidar_request(device_type=sensorsim_pb2.LidarDeviceType.AT128)
+    ctx = mock.Mock()
+    ctx.abort.side_effect = RuntimeError("abort")
+    with pytest.raises(RuntimeError):
+        servicer.render_lidar(req, context=ctx)
+    ctx.abort.assert_called_once()
+
+
+def test_render_aggregated_isolates_lidar_failure(servicer_with_stub, monkeypatch):
+    servicer, _ = servicer_with_stub
+
+    # First lidar sub-request succeeds, second raises (mocking a splatsim error).
+    calls = {"n": 0}
+
+    def flaky_render(scene_handle, base_to_world_np, device_type):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            xyz = np.zeros((1, 3), dtype=np.float32)
+            intensity = np.zeros((1,), dtype=np.float32)
+            ring_ids = np.zeros((1,), dtype=np.uint16)
+            return xyz, intensity, ring_ids
+        raise RuntimeError("simulated splatsim failure")
+
+    monkeypatch.setattr(
+        "alpasim_splatsim_renderer.server.render_lidar_panorama_from_scene",
+        flaky_render,
+    )
+
+    agg = sensorsim_pb2.AggregatedRenderRequest()
+    agg.rgb_requests.add().CopyFrom(
+        sensorsim_pb2.RGBRenderRequest(
+            scene_id="test-scene",
+            camera_intrinsics=_pinhole_spec(),
+            sensor_pose=_identity_pose_pair(),
+            image_format=sensorsim_pb2.PNG,
+        )
+    )
+    agg.lidar_requests.add().CopyFrom(_make_lidar_request())
+    agg.lidar_requests.add().CopyFrom(_make_lidar_request())
+
+    resp = servicer.render_aggregated(agg, context=mock.Mock())
+    assert len(resp.rgb_returns) == 1
+    assert resp.rgb_returns[0].image_bytes  # RGB succeeded
+    assert len(resp.lidar_returns) == 2
+    assert resp.lidar_returns[0].num_points == 1  # first lidar succeeded
+    assert resp.lidar_returns[1].num_points == 0  # second failed → empty
 
 
 def test_batch_render_rgb_returns_per_camera_success(servicer_with_stub):

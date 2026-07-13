@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """gRPC entry point for the splatsim-backed renderer.
 
 Implements the alpasim ``SensorsimService`` contract so Runtime can swap NuRec
-for splatsim without changing the client. RGB rendering is delegated to the
-splatsim Python API (Cesium tileset → 1 frame); LiDAR + batch / aggregated
-RPCs and the dynamic_objects field are NOP for this initial integration.
+for splatsim without changing the client. RGB rendering is delegated to
+splatsim's :class:`splatsim.Renderer`; LiDAR is delegated to splatsim's
+:class:`splatsim.LidarRenderer` (both introduced in v0.2.0). ``dynamic_objects``
+in the request is currently ignored — only the static background is rendered.
 """
 
 from __future__ import annotations
@@ -15,14 +19,17 @@ from concurrent import futures
 from pathlib import Path
 from typing import Optional
 
-import grpc
 from alpasim_grpc.v0 import common_pb2, sensorsim_pb2, sensorsim_pb2_grpc
 
+import grpc
+
 from . import __version__ as renderer_version
+from .lidar_adapter import render_lidar_panorama_from_scene
 from .render_adapter import (
     camera_spec_to_intrinsics,
     encode_image,
     pose_pair_to_viewmat,
+    pose_to_sensor_to_world,
 )
 from .scene_loader import SceneHandle
 
@@ -38,45 +45,88 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         # mismatches so misconfigured Runtime requests are visible.
         self._scene_id = scene_id
 
-    # ----- rendering -----
+    # ----- rendering (internal, raise on error) -----
 
-    def render_rgb(self, request: sensorsim_pb2.RGBRenderRequest, context):
+    def _do_render_rgb(
+        self, request: sensorsim_pb2.RGBRenderRequest
+    ) -> sensorsim_pb2.RGBRenderReturn:
         if request.scene_id and request.scene_id != self._scene_id:
             logger.warning(
                 "render_rgb scene_id mismatch (requested=%s, loaded=%s); rendering loaded scene",
                 request.scene_id,
                 self._scene_id,
             )
-        try:
-            intrinsics = camera_spec_to_intrinsics(request.camera_intrinsics)
-        except NotImplementedError as exc:
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, str(exc))
-            return sensorsim_pb2.RGBRenderReturn()  # unreachable
-
-        viewmat = pose_pair_to_viewmat(request.sensor_pose)
+        intrinsics = camera_spec_to_intrinsics(request.camera_intrinsics)
+        viewmat = pose_pair_to_viewmat(
+            request.sensor_pose,
+            world_origin=self._scene.tile_local_centroid,
+        )
         rgb = self._scene.render(viewmat, intrinsics.k_matrix())
         image_bytes = encode_image(rgb, request.image_format, request.image_quality)
         return sensorsim_pb2.RGBRenderReturn(image_bytes=image_bytes)
 
-    def render_lidar(self, request: sensorsim_pb2.LidarRenderRequest, context):
-        # NOP: dynamic objects + LiDAR are out of scope for the initial
-        # integration. Return an empty point cloud so callers can detect "no
-        # data" without erroring out.
-        return sensorsim_pb2.LidarRenderReturn(num_points=0)
+    def _do_render_lidar(
+        self, request: sensorsim_pb2.LidarRenderRequest
+    ) -> sensorsim_pb2.LidarRenderReturn:
+        if request.scene_id and request.scene_id != self._scene_id:
+            logger.warning(
+                "render_lidar scene_id mismatch (requested=%s, loaded=%s); rendering loaded scene",
+                request.scene_id,
+                self._scene_id,
+            )
+        device_type = request.lidar_config.lidar_type
+        base_to_world = pose_to_sensor_to_world(
+            request.sensor_pose.start_pose,
+            world_origin=self._scene.tile_local_centroid,
+        )
+        xyz, intensity, ring_ids = render_lidar_panorama_from_scene(
+            self._scene, base_to_world, device_type
+        )
+        # ring_ids on the wire are packed little-endian uint16.
+        ring_ids_u16 = ring_ids.astype("<u2", copy=False)
+        return sensorsim_pb2.LidarRenderReturn(
+            num_points=int(xyz.shape[0]),
+            point_xyzs_buffer=xyz.tobytes(order="C"),
+            point_intensities_buffer=intensity.tobytes(order="C"),
+            point_ring_ids_buffer=ring_ids_u16.tobytes(order="C"),
+        )
 
-    def render_aggregated(self, request: sensorsim_pb2.AggregatedRenderRequest, context):
-        # Isolate per-item failures so one bad camera doesn't cancel the rest
-        # of the aggregate. Mirrors batch_render_rgb's tolerance for partial
-        # success; clients see an empty result for failed slots and a logged
-        # exception, instead of an RPC-level abort.
+    # ----- rendering (public RPC entry points) -----
+
+    def render_rgb(self, request: sensorsim_pb2.RGBRenderRequest, context):
+        try:
+            return self._do_render_rgb(request)
+        except NotImplementedError as exc:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, str(exc))
+            return sensorsim_pb2.RGBRenderReturn()  # unreachable
+
+    def render_lidar(self, request: sensorsim_pb2.LidarRenderRequest, context):
+        try:
+            return self._do_render_lidar(request)
+        except NotImplementedError as exc:
+            context.abort(grpc.StatusCode.UNIMPLEMENTED, str(exc))
+            return sensorsim_pb2.LidarRenderReturn()  # unreachable
+
+    def render_aggregated(
+        self, request: sensorsim_pb2.AggregatedRenderRequest, context
+    ):
+        # Isolate per-item failures so one bad sub-request doesn't cancel the
+        # rest of the aggregate. Uses the internal helpers directly to avoid
+        # ``context.abort()`` from a sub-call terminating this outer RPC.
         rgb_returns: list[sensorsim_pb2.RGBRenderReturn] = []
         for req in request.rgb_requests:
             try:
-                rgb_returns.append(self.render_rgb(req, context))
+                rgb_returns.append(self._do_render_rgb(req))
             except Exception:  # noqa: BLE001
                 logger.exception("render_aggregated: rgb sub-request failed")
                 rgb_returns.append(sensorsim_pb2.RGBRenderReturn())
-        lidar_returns = [self.render_lidar(req, context) for req in request.lidar_requests]
+        lidar_returns: list[sensorsim_pb2.LidarRenderReturn] = []
+        for req in request.lidar_requests:
+            try:
+                lidar_returns.append(self._do_render_lidar(req))
+            except Exception:  # noqa: BLE001
+                logger.exception("render_aggregated: lidar sub-request failed")
+                lidar_returns.append(sensorsim_pb2.LidarRenderReturn())
         return sensorsim_pb2.AggregatedRenderReturn(
             rgb_returns=rgb_returns,
             lidar_returns=lidar_returns,
@@ -86,7 +136,7 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         items = []
         for item in request.items:
             try:
-                result = self.render_rgb(item.request, context)
+                result = self._do_render_rgb(item.request)
                 items.append(
                     sensorsim_pb2.BatchRGBRenderReturnItem(
                         camera_name=item.camera_name,
@@ -141,9 +191,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--host", default="0.0.0.0", help="bind address")
     parser.add_argument("--port", type=int, required=True, help="bind port")
     parser.add_argument(
-        "--cesium-tiles-dir",
+        "--scene-usdz",
         required=True,
-        help="path to a directory containing tileset.json (and optionally scene.yaml)",
+        help="path to a .usdz file (3D Gaussian tileset with EXT_3dgs_spz chunks)",
     )
     parser.add_argument(
         "--scene-id",
@@ -164,11 +214,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    tiles_dir = Path(args.cesium_tiles_dir)
-    if not tiles_dir.is_dir():
-        raise SystemExit(f"--cesium-tiles-dir must be a directory: {tiles_dir}")
+    usdz_path = Path(args.scene_usdz)
+    if not usdz_path.is_file() or usdz_path.suffix.lower() != ".usdz":
+        raise SystemExit(f"--scene-usdz must point at a .usdz file: {usdz_path}")
 
-    scene = SceneHandle(tiles_dir=tiles_dir, default_resolution=(args.width, args.height))
+    scene = SceneHandle(
+        usdz_path=usdz_path, default_resolution=(args.width, args.height)
+    )
     servicer = SplatsimSensorsimServicer(scene=scene, scene_id=args.scene_id)
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
@@ -176,7 +228,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     bind_addr = f"{args.host}:{args.port}"
     server.add_insecure_port(bind_addr)
     server.start()
-    logger.info("splatsim_renderer_server listening on %s (tiles=%s)", bind_addr, tiles_dir)
+    logger.info(
+        "splatsim_renderer_server listening on %s (scene=%s)", bind_addr, usdz_path
+    )
     try:
         server.wait_for_termination()
     except KeyboardInterrupt:
