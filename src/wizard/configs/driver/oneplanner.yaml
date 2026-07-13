@@ -1,0 +1,62 @@
+# @package _global_
+#
+# OnePlanner-backed driver. Runs the tier4/OnePlanner driver server
+# (``oneplanner.deployment.driver_server``) which speaks the alpasim
+# ``EgoDriver`` gRPC interface directly. See
+# https://github.com/tier4/OnePlanner/pull/112.
+#
+# Unlike vavam/alpamayo which configure alpasim's own driver service via the
+# ``driver:`` block, this file overrides ``services.driver`` wholesale to
+# point at the OnePlanner container. Pattern mirrors ``renderer/splatsim.yaml``.
+#
+# The image is expected to be pre-built locally (``docker build -t
+# oneplanner:local .`` inside a checkout of tier4/OnePlanner). At the time of
+# writing PR #112 has no published ghcr.io tag.
+#
+# Usage:
+#   uv run alpasim_wizard ... \
+#     driver=oneplanner renderer=splatsim \
+#     defines.oneplanner_ckpt=/path/to/e2e_planner.ckpt
+
+# Presence marker so ``setup_omegaconf._is_missing_or_empty(cfg, "driver")``
+# doesn't reject the run. The alpasim driver service is fully replaced by the
+# OnePlanner container defined below, so the fields under ``driver:`` are not
+# consumed by anything at runtime.
+driver:
+  model:
+    model_type: oneplanner
+
+services:
+  driver:
+    image: oneplanner:local
+    external_image: true
+    # Disable GPU reservation for the driver container: see the environment
+    # comment below on the CUDA 13.0 vs. host-driver 550 mismatch.
+    gpus: []
+    volumes:
+      # Checkpoint: image's default CMD reads /opt/oneplanner/ckpts/e2e_planner.pth,
+      # so bind-mount the host .ckpt straight onto that path.
+      - "${defines.oneplanner_ckpt}:/opt/oneplanner/ckpts/e2e_planner.pth"
+      # Scene USDZ (shared with the splatsim renderer). driver_server.py
+      # requires --scene-usdz to build its HD-map tensors from the embedded
+      # lanelet2 asset.
+      - "${defines.splatsim_scene_usdz}:/mnt/oneplanner/scene.usdz"
+      - "${wizard.log_dir}:/mnt/output"
+    environments:
+      - PYTHONUNBUFFERED=1
+      # OnePlanner's image is built on nvidia/cuda:13.0.0, but the host driver
+      # this branch was validated on (550.163.01) tops out at CUDA 12.4. That
+      # mismatch raises "Error 804: forward compatibility was attempted on non
+      # supported HW" the moment torch touches the GPU. Force CPU inference
+      # for now — GPU can be re-enabled once the host driver is upgraded to
+      # 570+ or OnePlanner's Dockerfile is rebased onto a CUDA 12.4 image.
+      - NVIDIA_VISIBLE_DEVICES=
+      - CUDA_VISIBLE_DEVICES=
+    command:
+      - "python -m oneplanner.deployment.driver_server"
+      - "--planner-ckpt=/opt/oneplanner/ckpts/e2e_planner.pth"
+      - "--scene-usdz=/mnt/oneplanner/scene.usdz"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--device=cpu"
+      - "--log-level=${wizard.log_level}"

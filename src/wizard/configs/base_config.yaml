@@ -36,6 +36,10 @@ defines:
   sensordata: "${defines.filesystem}/nre-artifacts"
   trafficsim_map_cache: "${defines.filesystem}/trafficsim/unified_data_cache"
   splatsim_scene_usdz: "${defines.filesystem}/splatsim/scene.usdz"
+  # OnePlanner driver checkpoint (see driver/oneplanner.yaml). Points at the
+  # E2E planner .ckpt on the host; mounted read-only at
+  # /opt/oneplanner/ckpts/e2e_planner.pth inside the container.
+  oneplanner_ckpt: "${oc.env:HOME}/Downloads/oneplanner_phase2_gridbev_last.ckpt"
 
   renderer_entrypoint: "/app/internal/scripts/pycena/runtime/pycena_nrm_full"
   nre_max_workers: 4
