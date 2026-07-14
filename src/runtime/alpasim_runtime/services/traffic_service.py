@@ -104,6 +104,7 @@ class TrafficService(ServiceBase[TrafficServiceStub]):
             random_seed=random.randint(0, 2**32 - 1),
             logged_object_trajectories=logged_object_trajectories,
             handover_time_us=start_timestamp_us + int(1e6),  # Add 1 second for warm-up
+            tick_interval_us=cfg.control_timestep_us,
         )
 
         # Log and start session

@@ -37,6 +37,11 @@ class TrafficSessionConfig:
     ego_aabb: AABB
     gt_ego_aabb_trajectory: Trajectory
     start_timestamp_us: int
+    # alpasim control loop cadence. Forwarded as ``tick_interval_us`` in the
+    # ``TrafficSessionRequest`` so CARLA advances its physics world at exactly
+    # this rate — keeping alpasim-requested timestamps and CARLA's actual world
+    # clock in lock-step.
+    control_timestep_us: int = 0
 
 
 @dataclass(frozen=True)

@@ -127,23 +127,40 @@ class CarlaSession:
         entry.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
     def tick_until(self, target_time_us: int) -> None:
-        """Advance the CARLA world to (or past) `target_time_us`.
+        """Advance CARLA to ``target_time_us`` while keeping the two clocks aligned.
 
-        Always advances by at least one tick so the snapshot reflects a fresh
-        world state even when the requested delta is shorter than fixed_delta
-        (this avoids returning stale poses when Runtime polls faster than the
-        configured step).
+        ``last_time_query_us`` tracks CARLA's *simulated* world clock — i.e.
+        ``previous_last + steps * fixed_delta`` — rather than whatever alpasim
+        asked for. That is what keeps the caller's intended timestamp from
+        drifting away from CARLA's actual world time whenever the two disagree.
+
+        Requires ``target_time_us`` to land on a tick boundary
+        (``fixed_delta_seconds``). Misaligned targets raise instead of silently
+        rounding, because rounding is exactly how the two clocks drifted apart
+        before.
         """
         step_us = int(self.fixed_delta_seconds * 1e6)
-        delta_us = max(target_time_us - self.last_time_query_us, 0)
-        if step_us > 0:
-            # ceil(delta_us / step_us), with a minimum of 1 so we always tick.
-            steps = max(1, -(-delta_us // step_us))
-        else:
-            steps = 1
+        if step_us <= 0:
+            raise ValueError(
+                "fixed_delta_seconds must be positive, got "
+                f"{self.fixed_delta_seconds!r}"
+            )
+        delta_us = target_time_us - self.last_time_query_us
+        if delta_us <= 0:
+            # A query for a timestamp we already passed (or exactly matched) is
+            # a no-op: CARLA can't rewind, and rewinding would defeat the
+            # alignment guarantee.
+            return
+        if delta_us % step_us != 0:
+            raise ValueError(
+                f"target_time_us={target_time_us} is not aligned to "
+                f"fixed_delta={step_us}us "
+                f"(last_time_query_us={self.last_time_query_us})"
+            )
+        steps = delta_us // step_us
         for _ in range(steps):
             self.world.tick()
-        self.last_time_query_us = target_time_us
+        self.last_time_query_us += steps * step_us
 
     def snapshot(self) -> traffic_pb2.TrafficReturn:
         """Collect the current pose of every registered actor."""

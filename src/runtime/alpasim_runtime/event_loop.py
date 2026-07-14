@@ -521,6 +521,7 @@ class EventBasedRollout:
                         ego_aabb=self.unbound.ego_aabb,
                         gt_ego_aabb_trajectory=gt_ego_aabb_trajectory,
                         start_timestamp_us=self.unbound.egomotion_context_start_us,
+                        control_timestep_us=self.unbound.control_timestep_us,
                     ),
                 )
             )

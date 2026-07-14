@@ -477,3 +477,136 @@ def test_register_actor_back_compat_defaults_grpc_driven_from_is_ego(fake_carla)
 
     assert session._actors_by_id["EGO"].is_grpc_driven is True
     assert session._actors_by_id["npc"].is_grpc_driven is False
+
+
+# =============================================================================
+# tick_until: alpasim <-> CARLA clock alignment
+# =============================================================================
+
+
+def test_tick_until_advances_by_exact_step_multiples():
+    """One RPC call at target_time_us = last + N * step_us advances N ticks."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.05,
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 0
+
+    session.tick_until(100_000)  # 2 * 50ms
+
+    assert session.world.tick.call_count == 2
+    assert session.last_time_query_us == 100_000
+
+
+def test_tick_until_tracks_world_clock_not_target():
+    """After N calls with aligned targets, last_time_query_us equals CARLA world time."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.1,  # 100ms tick
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 0
+
+    for target in (100_000, 200_000, 300_000, 400_000):
+        session.tick_until(target)
+
+    # 4 requests of 1 tick each, world advanced by 4 * 100ms.
+    assert session.world.tick.call_count == 4
+    assert session.last_time_query_us == 400_000
+
+
+def test_tick_until_idempotent_when_delta_is_zero():
+    """A query for the current timestamp does not tick — no silent world drift."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.05,
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 100_000
+
+    session.tick_until(100_000)
+
+    session.world.tick.assert_not_called()
+    assert session.last_time_query_us == 100_000
+
+
+def test_tick_until_no_op_for_past_target():
+    """Late-arriving queries for a timestamp we already passed are a no-op."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.05,
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 200_000
+
+    session.tick_until(100_000)
+
+    session.world.tick.assert_not_called()
+    assert session.last_time_query_us == 200_000
+
+
+def test_tick_until_rejects_misaligned_target():
+    """Targets that do not land on a tick boundary raise instead of silently rounding."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.05,  # 50ms
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 0
+
+    with pytest.raises(ValueError, match="not aligned"):
+        session.tick_until(75_000)  # 1.5 * step_us
+
+    session.world.tick.assert_not_called()
+
+
+def test_tick_until_uses_configured_step():
+    """fixed_delta_seconds passed via constructor drives the tick interval."""
+    from alpasim_trafficsim.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+        fixed_delta_seconds=0.025,  # 25ms
+    )
+    session.world = mock.MagicMock()
+    session.last_time_query_us = 0
+
+    session.tick_until(100_000)  # 4 * 25ms
+
+    assert session.world.tick.call_count == 4
+    assert session.last_time_query_us == 100_000
