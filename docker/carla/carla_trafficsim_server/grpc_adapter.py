@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 NVIDIA Corporation
+
 """Conversion helpers between Alpasim gRPC proto messages and CARLA actor state.
 
 Kept dependency-light on purpose: trafficsim runs on Python 3.10 (constrained

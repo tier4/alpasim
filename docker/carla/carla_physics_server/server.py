@@ -28,7 +28,6 @@ from alpasim_grpc.v0.physics_pb2_grpc import (
 )
 from alpasim_physics import VERSION_MESSAGE
 from alpasim_physics.backend import PhysicsBackend
-from alpasim_physics.carla_clock import CarlaClock
 from alpasim_physics.utils import (
     aabb_to_ndarray,
     ndarray_to_vec3,
@@ -37,6 +36,7 @@ from alpasim_physics.utils import (
     scipy_to_quat,
 )
 from alpasim_utils.artifact import Artifact
+from carla_physics_server.carla_clock import CarlaClock
 from scipy.spatial.transform import Rotation as R
 
 import grpc
