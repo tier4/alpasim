@@ -48,14 +48,10 @@ class PhysicsSimService(PhysicsServiceServicer):
     def __init__(
         self,
         artifact_glob: str,
-        carla_host: str,
-        carla_port: int,
         cache_size: int = 2,
         use_ground_mesh: bool = False,
         visualize: bool = False,
     ) -> None:
-        self._carla_host = carla_host
-        self._carla_port = carla_port
         self._carla_module = None  # lazily imported on first session
         self._clocks_lock = threading.Lock()
         self._clocks: dict[str, CarlaClock] = {}
@@ -109,8 +105,6 @@ class PhysicsSimService(PhysicsServiceServicer):
                 )
             clock = CarlaClock(
                 session_uuid=request.session_uuid,
-                carla_host=self._carla_host,
-                carla_port=self._carla_port,
                 tick_interval_us=request.tick_interval_us,
             )
             clock.open(self._ensure_carla_module())
@@ -235,18 +229,6 @@ def parse_args(
     )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument(
-        "--carla-host",
-        type=str,
-        default="localhost",
-        help="Host where the CARLA server listens (same container in the default topology).",
-    )
-    parser.add_argument(
-        "--carla-port",
-        type=int,
-        default=2000,
-        help="Port where the CARLA server listens.",
-    )
     parser.add_argument("--use-ground-mesh", type=bool, default=False)
     parser.add_argument("--visualize", type=bool, default=False)
     parser.add_argument(
@@ -282,8 +264,6 @@ def main(arg_list: list[str] | None = None) -> None:
 
     service = PhysicsSimService(
         args.artifact_glob,
-        carla_host=args.carla_host,
-        carla_port=args.carla_port,
         cache_size=args.cache_size,
         use_ground_mesh=args.use_ground_mesh,
         visualize=args.visualize,

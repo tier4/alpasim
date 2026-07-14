@@ -17,14 +17,17 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# CARLA is always co-located in the physics container in the alpasim topology
+# (trafficsim reaches it as `physics-0:2000`, we reach it as localhost).
+CARLA_HOST = "localhost"
+CARLA_PORT = 2000
+
 
 @dataclass
 class CarlaClock:
     """Minimal CARLA client that owns synchronous-mode tick cadence."""
 
     session_uuid: str
-    carla_host: str
-    carla_port: int
     tick_interval_us: int
 
     client: Any = None
@@ -41,11 +44,11 @@ class CarlaClock:
         logger.info(
             "session %s: connecting to CARLA at %s:%d (fixed_delta=%.6fs)",
             self.session_uuid,
-            self.carla_host,
-            self.carla_port,
+            CARLA_HOST,
+            CARLA_PORT,
             fixed_delta_seconds,
         )
-        self.client = carla_module.Client(self.carla_host, self.carla_port)
+        self.client = carla_module.Client(CARLA_HOST, CARLA_PORT)
         self.client.set_timeout(30.0)
         self.world = self.client.get_world()
         settings = self.world.get_settings()
