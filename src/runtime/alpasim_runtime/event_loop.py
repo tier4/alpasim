@@ -51,7 +51,8 @@ from alpasim_runtime.services.session_configs import (
 )
 from alpasim_runtime.services.traffic_service import TrafficService
 from alpasim_runtime.telemetry.telemetry_context import try_get_context
-from alpasim_runtime.types import RuntimeCamera
+from alpasim_runtime.events.lidar import make_initial_lidar_render_events
+from alpasim_runtime.types import RuntimeCamera, RuntimeLidar
 from alpasim_runtime.unbound_rollout import UnboundRollout
 from alpasim_utils import geometry
 from alpasim_utils.logs import LogWriter
@@ -117,6 +118,7 @@ class EventBasedRollout:
     planner_delay_buffer: DelayBuffer = field(init=False)
     route_generator: RouteGenerator | None = field(init=False)
     runtime_cameras: list[RuntimeCamera] = field(init=False, default_factory=list)
+    runtime_lidars: list[RuntimeLidar] = field(init=False, default_factory=list)
 
     _runtime_evaluator: RuntimeEvaluator = field(init=False)
 
@@ -377,6 +379,16 @@ class EventBasedRollout:
         else:
             queue.submit(render_events)
 
+        for lidar_event in make_initial_lidar_render_events(
+            scene_start_us=scene_start_us,
+            simulation_end_us=simulation_end_us,
+            runtime_lidars=list(self.runtime_lidars),
+            renderer_service=self.renderer_service,
+            driver=self.driver,
+            broadcaster=self.broadcaster,
+        ):
+            queue.submit(lidar_event)
+
         # === Pipeline events — all start at first_policy_timestamp_us ===
         dt = unbound.control_timestep_us
 
@@ -463,6 +475,17 @@ class EventBasedRollout:
                     ],
                 )
                 for camera_cfg in self.unbound.camera_configs
+            ]
+
+            # LiDAR sweeps use the render start (== first camera shutter close)
+            # as their initial tick so cameras and LiDAR arrive at the driver
+            # in the same simulated millisecond.
+            self.runtime_lidars = [
+                RuntimeLidar.from_lidar_config(
+                    lidar_cfg,
+                    first_frame_end_us=self.unbound.render_start_timestamp_us,
+                )
+                for lidar_cfg in self.unbound.lidar_configs
             ]
 
             # Enter the renderer's session: owns scene-specific camera

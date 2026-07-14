@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from alpasim_runtime.config import RuntimeCameraConfig
+from alpasim_grpc.v0.sensorsim_pb2 import LidarDeviceType
+
+from alpasim_runtime.config import RuntimeCameraConfig, RuntimeLidarConfig
 
 
 @dataclass
@@ -90,5 +92,53 @@ class RuntimeCamera:
         return cls(
             logical_id=camera_cfg.logical_id,
             render_resolution_hw=(camera_cfg.height, camera_cfg.width),
+            clock=clock,
+        )
+
+
+@dataclass
+class RuntimeLidar:
+    """This class defines which LiDAR sensors are rendered and how to render them.
+
+    - ``logical_id`` uniquely identifies the sensor; the driver receives point
+      clouds keyed by this id.
+    - ``device_type`` picks the physical model (e.g. ``PANDAR128``) that the
+      renderer applies.
+    - ``clock`` determines the timing of point-cloud emission. LiDAR is treated
+      as instantaneous (``duration_us=0``) — the trigger's ``time_range_us``
+      collapses to a single timestamp.
+    """
+
+    logical_id: str
+    device_type: LidarDeviceType
+    clock: Clock
+
+    @classmethod
+    def from_lidar_config(
+        cls, lidar_cfg: RuntimeLidarConfig, first_frame_end_us: int
+    ) -> RuntimeLidar:
+        """Build a ``RuntimeLidar`` from a scenario ``RuntimeLidarConfig``.
+
+        ``first_frame_end_us`` anchors the first LiDAR sweep so the initial
+        cloud lines up with the first camera frame's shutter-close (this keeps
+        camera + LiDAR arriving at the driver in the same simulated
+        millisecond).
+        """
+        try:
+            device_type = LidarDeviceType.Value(lidar_cfg.device_type)
+        except ValueError as exc:
+            raise ValueError(
+                f"Unknown LidarDeviceType {lidar_cfg.device_type!r} for lidar "
+                f"{lidar_cfg.logical_id!r}"
+            ) from exc
+        clock = Clock(
+            interval_us=lidar_cfg.frame_interval_us,
+            duration_us=0,
+            start_us=first_frame_end_us,
+            first_end_us=first_frame_end_us,
+        )
+        return cls(
+            logical_id=lidar_cfg.logical_id,
+            device_type=device_type,
             clock=clock,
         )

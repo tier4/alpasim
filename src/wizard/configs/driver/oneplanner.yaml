@@ -26,13 +26,20 @@ driver:
   model:
     model_type: oneplanner
 
+# OnePlanner is a LiDAR-based E2E planner: without a point-cloud observation
+# it emits ~zero-motion trajectories. Wire up one PANDAR128 sweep at 10 Hz so
+# the runtime forwards point clouds into ``submit_lidar_observation``.
+runtime:
+  simulation_config:
+    lidars:
+      - logical_id: lidar_top
+        device_type: PANDAR128
+        frame_interval_us: 100_000
+
 services:
   driver:
     image: oneplanner:local
     external_image: true
-    # Disable GPU reservation for the driver container: see the environment
-    # comment below on the CUDA 13.0 vs. host-driver 550 mismatch.
-    gpus: []
     volumes:
       # Checkpoint: image's default CMD reads /opt/oneplanner/ckpts/e2e_planner.pth,
       # so bind-mount the host .ckpt straight onto that path.
@@ -42,21 +49,17 @@ services:
       # lanelet2 asset.
       - "${defines.splatsim_scene_usdz}:/mnt/oneplanner/scene.usdz"
       - "${wizard.log_dir}:/mnt/output"
+      # HOTFIX: cast has_speed_limit to bool before torch.where (upstream bug in
+      # OnePlanner where map_tensors stores has_speed_limit as float32 but the
+      # encoder expects a bool condition). Remove once fixed upstream.
+      - "/tmp/oneplanner_encoder_patched.py:/opt/oneplanner/src/oneplanner/models/planner/encoder.py"
     environments:
       - PYTHONUNBUFFERED=1
-      # OnePlanner's image is built on nvidia/cuda:13.0.0, but the host driver
-      # this branch was validated on (550.163.01) tops out at CUDA 12.4. That
-      # mismatch raises "Error 804: forward compatibility was attempted on non
-      # supported HW" the moment torch touches the GPU. Force CPU inference
-      # for now — GPU can be re-enabled once the host driver is upgraded to
-      # 570+ or OnePlanner's Dockerfile is rebased onto a CUDA 12.4 image.
-      - NVIDIA_VISIBLE_DEVICES=
-      - CUDA_VISIBLE_DEVICES=
     command:
       - "python -m oneplanner.deployment.driver_server"
       - "--planner-ckpt=/opt/oneplanner/ckpts/e2e_planner.pth"
       - "--scene-usdz=/mnt/oneplanner/scene.usdz"
       - "--host=0.0.0.0"
       - "--port={port}"
-      - "--device=cpu"
+      - "--device=cuda"
       - "--log-level=${wizard.log_level}"

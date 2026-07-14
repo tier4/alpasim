@@ -68,7 +68,15 @@ class ServiceBase(ABC, Generic[StubType]):
     async def _open_connection(self) -> None:
         """Open gRPC connection."""
         if not self.skip:
-            self.channel = grpc.aio.insecure_channel(self.address)
+            # LiDAR point clouds (PANDAR128 sweeps are ~4.5 MB) already exceed
+            # gRPC's 4 MiB default. Match the ceiling used elsewhere in the
+            # runtime (video_model_service.MAX_GRPC_MESSAGE_BYTES) so all
+            # sensor payloads fit.
+            options = [
+                ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+                ("grpc.max_send_message_length", 64 * 1024 * 1024),
+            ]
+            self.channel = grpc.aio.insecure_channel(self.address, options=options)
             self.stub = self.stub_class(self.channel)
 
     async def _close_connection(self) -> None:

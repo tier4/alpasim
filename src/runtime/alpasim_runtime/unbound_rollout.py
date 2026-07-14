@@ -17,6 +17,7 @@ from alpasim_runtime.config import (
     RenderBundling,
     RouteGeneratorType,
     RuntimeCameraConfig,
+    RuntimeLidarConfig,
     SimulationConfig,
     VehicleConfig,
 )
@@ -176,6 +177,7 @@ class UnboundRollout:
     pose_reporting_interval_us: int
     camera_configs: list[RuntimeCameraConfig]
     first_camera_frame_ranges_us: dict[str, range]
+    lidar_configs: list[RuntimeLidarConfig]
     force_gt_period: range
     image_format: ImageFormat
     ego_mask_rig_config_id: str
@@ -212,6 +214,7 @@ class UnboundRollout:
     ) -> UnboundRollout:
         """Create UnboundRollout from SceneDataSource."""
         camera_configs = list(simulation_config.cameras)
+        lidar_configs = list(simulation_config.lidars)
         renderer_service.validate_timing_alignment(simulation_config)
         timing = _build_rollout_timing(
             simulation_config,
@@ -293,6 +296,7 @@ class UnboundRollout:
             version_ids=version_ids,
             camera_configs=camera_configs,
             first_camera_frame_ranges_us=timing.first_camera_frame_ranges_us,
+            lidar_configs=lidar_configs,
             force_gt_period=force_gt_period,
             physics_update_mode=simulation_config.physics_update_mode,
             image_format={"jpeg": ImageFormat.JPEG, "png": ImageFormat.PNG}[

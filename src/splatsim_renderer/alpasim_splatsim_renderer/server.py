@@ -26,6 +26,7 @@ import grpc
 from . import __version__ as renderer_version
 from .lidar_adapter import render_lidar_panorama_from_scene
 from .render_adapter import (
+    CameraIntrinsics,
     camera_spec_to_intrinsics,
     encode_image,
     pose_pair_to_viewmat,
@@ -36,14 +37,130 @@ from .scene_loader import SceneHandle
 logger = logging.getLogger(__name__)
 
 
+def _build_available_cameras_from_usdz(
+    usdz_path: Optional[Path],
+) -> list["sensorsim_pb2.AvailableCamerasReturn.AvailableCamera"]:
+    """Read camera_calibrations from the USDZ rig_trajectories.json.
+
+    Returns AvailableCamera entries with the ``T_sensor_rig`` extrinsics and
+    pinhole intrinsics from the USDZ. Non-fatal on any parse failure — an empty
+    list falls back to the original "no catalog" behavior.
+    """
+    if usdz_path is None:
+        return []
+
+    import json
+    import zipfile
+    import numpy as np
+
+    try:
+        with zipfile.ZipFile(str(usdz_path)) as zf:
+            with zf.open("rig_trajectories.json") as f:
+                doc = json.load(f)
+    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not read camera_calibrations from %s: %s", usdz_path, exc)
+        return []
+
+    calibrations = doc.get("camera_calibrations") or {}
+    if not isinstance(calibrations, dict):
+        return []
+
+    cameras: list = []
+    for logical_id, cam in calibrations.items():
+        try:
+            model = cam["camera_model"]
+            if model.get("type") != "pinhole":
+                logger.warning(
+                    "Skipping camera %s: unsupported camera_model type %r",
+                    logical_id,
+                    model.get("type"),
+                )
+                continue
+            params = model["parameters"]
+            width, height = params["resolution"]
+            fx, fy, cx, cy = params["fx"], params["fy"], params["cx"], params["cy"]
+
+            T = np.asarray(cam["T_sensor_rig"], dtype=np.float64)
+            R = T[:3, :3]
+            t = T[:3, 3]
+            # Matrix -> quaternion (xyzw). Uses Shepperd's method to avoid
+            # scipy dependency here.
+            trace = R[0, 0] + R[1, 1] + R[2, 2]
+            if trace > 0.0:
+                s = np.sqrt(trace + 1.0) * 2.0
+                qw = 0.25 * s
+                qx = (R[2, 1] - R[1, 2]) / s
+                qy = (R[0, 2] - R[2, 0]) / s
+                qz = (R[1, 0] - R[0, 1]) / s
+            elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+                s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+                qw = (R[2, 1] - R[1, 2]) / s
+                qx = 0.25 * s
+                qy = (R[0, 1] + R[1, 0]) / s
+                qz = (R[0, 2] + R[2, 0]) / s
+            elif R[1, 1] > R[2, 2]:
+                s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+                qw = (R[0, 2] - R[2, 0]) / s
+                qx = (R[0, 1] + R[1, 0]) / s
+                qy = 0.25 * s
+                qz = (R[1, 2] + R[2, 1]) / s
+            else:
+                s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+                qw = (R[1, 0] - R[0, 1]) / s
+                qx = (R[0, 2] + R[2, 0]) / s
+                qy = (R[1, 2] + R[2, 1]) / s
+                qz = 0.25 * s
+
+            entry = sensorsim_pb2.AvailableCamerasReturn.AvailableCamera(
+                logical_id=logical_id,
+                intrinsics=sensorsim_pb2.CameraSpec(
+                    logical_id=logical_id,
+                    resolution_w=int(width),
+                    resolution_h=int(height),
+                    opencv_pinhole_param=sensorsim_pb2.OpenCVPinholeCameraParam(
+                        focal_length_x=float(fx),
+                        focal_length_y=float(fy),
+                        principal_point_x=float(cx),
+                        principal_point_y=float(cy),
+                    ),
+                ),
+                rig_to_camera=common_pb2.Pose(
+                    vec=common_pb2.Vec3(x=float(t[0]), y=float(t[1]), z=float(t[2])),
+                    quat=common_pb2.Quat(
+                        w=float(qw),
+                        x=float(qx),
+                        y=float(qy),
+                        z=float(qz),
+                    ),
+                ),
+            )
+            cameras.append(entry)
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("Could not parse camera %s: %s", logical_id, exc)
+            continue
+
+    logger.info(
+        "Loaded %d camera(s) from USDZ rig_trajectories.json: %s",
+        len(cameras),
+        [c.logical_id for c in cameras],
+    )
+    return cameras
+
+
 class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
     """Splatsim-backed implementation of SensorsimService."""
 
-    def __init__(self, scene: SceneHandle, scene_id: str) -> None:
+    def __init__(
+        self,
+        scene: SceneHandle,
+        scene_id: str,
+        usdz_path: Optional[Path] = None,
+    ) -> None:
         self._scene = scene
         # One container == one scene for now. We accept any scene_id but log
         # mismatches so misconfigured Runtime requests are visible.
         self._scene_id = scene_id
+        self._available_cameras = _build_available_cameras_from_usdz(usdz_path)
 
     # ----- rendering (internal, raise on error) -----
 
@@ -57,11 +174,59 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
                 self._scene_id,
             )
         intrinsics = camera_spec_to_intrinsics(request.camera_intrinsics)
+        # The K matrix on the wire is calibrated for `intrinsics.width x .height`
+        # (the sensor's native resolution, e.g. 2880x1860 for CAM_FRONT_WIDE),
+        # but this Renderer's canvas is fixed at `self._scene.default_resolution`
+        # (e.g. 960x540). Feeding the unscaled K to gsplat produces principal
+        # points outside the small canvas, so every Gaussian projects off-screen
+        # and the image comes back all zeros. Scale K to the canvas.
+        canvas_w, canvas_h = self._scene.default_resolution
+        scale_x = canvas_w / float(intrinsics.width)
+        scale_y = canvas_h / float(intrinsics.height)
+        intrinsics = CameraIntrinsics(
+            width=canvas_w,
+            height=canvas_h,
+            fx=intrinsics.fx * scale_x,
+            fy=intrinsics.fy * scale_y,
+            cx=intrinsics.cx * scale_x,
+            cy=intrinsics.cy * scale_y,
+        )
+        # DEBUG: log incoming pose + scene stats to diagnose black-frame issue.
+        import numpy as _np
+        _sp = request.sensor_pose.start_pose
+        _sv = _np.array([_sp.vec.x, _sp.vec.y, _sp.vec.z], dtype=_np.float64)
+        _sq = _np.array([_sp.quat.x, _sp.quat.y, _sp.quat.z, _sp.quat.w], dtype=_np.float64)
+        _tlc = _np.asarray(self._scene.tile_local_centroid, dtype=_np.float64)
+        try:
+            _means = self._scene._bg.means.detach().cpu().numpy()
+            _bbox_min = _means.min(axis=0)
+            _bbox_max = _means.max(axis=0)
+        except Exception:
+            _bbox_min = _bbox_max = None
+        logger.info(
+            "RENDER_DBG pose_t=%s pose_q_xyzw=%s tile_local_centroid=%s bbox=[%s..%s] "
+            "K_scaled=fx=%.2f fy=%.2f cx=%.2f cy=%.2f canvas=%dx%d",
+            _sv.tolist(), _sq.tolist(), _tlc.tolist(),
+            None if _bbox_min is None else _bbox_min.tolist(),
+            None if _bbox_max is None else _bbox_max.tolist(),
+            intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
+            canvas_w, canvas_h,
+        )
         viewmat = pose_pair_to_viewmat(
             request.sensor_pose,
             world_origin=self._scene.tile_local_centroid,
         )
+        logger.info("RENDER_DBG viewmat=\n%s", _np.asarray(viewmat).tolist())
         rgb = self._scene.render(viewmat, intrinsics.k_matrix())
+        try:
+            _rgb_np = _np.asarray(rgb)
+            logger.info(
+                "RENDER_DBG rgb shape=%s dtype=%s min=%s max=%s mean=%s",
+                _rgb_np.shape, str(_rgb_np.dtype),
+                float(_rgb_np.min()), float(_rgb_np.max()), float(_rgb_np.mean()),
+            )
+        except Exception as _e:
+            logger.info("RENDER_DBG rgb stats failed: %s", _e)
         image_bytes = encode_image(rgb, request.image_format, request.image_quality)
         return sensorsim_pb2.RGBRenderReturn(image_bytes=image_bytes)
 
@@ -170,10 +335,12 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
     def get_available_cameras(
         self, request: sensorsim_pb2.AvailableCamerasRequest, context
     ):
-        # No catalog in NOP mode — Runtime is expected to supply intrinsics in
-        # render requests. Returning an empty list is the documented "unknown"
-        # answer.
-        return sensorsim_pb2.AvailableCamerasReturn()
+        # Runtime's CameraCatalog requires local overrides to be a subset of
+        # what sensorsim reports. Advertise the USDZ rig's cameras so the
+        # local extra_cameras merge check passes.
+        return sensorsim_pb2.AvailableCamerasReturn(
+            available_cameras=list(self._available_cameras)
+        )
 
     def get_available_trajectories(
         self, request: sensorsim_pb2.AvailableTrajectoriesRequest, context
@@ -221,7 +388,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     scene = SceneHandle(
         usdz_path=usdz_path, default_resolution=(args.width, args.height)
     )
-    servicer = SplatsimSensorsimServicer(scene=scene, scene_id=args.scene_id)
+    servicer = SplatsimSensorsimServicer(
+        scene=scene, scene_id=args.scene_id, usdz_path=usdz_path
+    )
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.max_workers))
     sensorsim_pb2_grpc.add_SensorsimServiceServicer_to_server(servicer, server)

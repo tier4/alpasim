@@ -176,6 +176,21 @@ class RuntimeCameraConfig:
 
 
 @dataclass
+class RuntimeLidarConfig:
+    """Configuration for a LiDAR in the runtime. See `RuntimeLidar` for more details.
+
+    ``device_type`` names one of the sensorsim ``LidarDeviceType`` enum members
+    (e.g. ``"PANDAR128"`` or ``"AT128"``). It is stored as a string so the
+    config file stays free of gRPC-generated enum imports; the runtime maps it
+    to the enum when the ``RuntimeLidar`` is built.
+    """
+
+    logical_id: str = "lidar_top"
+    device_type: str = "PANDAR128"
+    frame_interval_us: int = 100_000  # 10 Hz
+
+
+@dataclass
 class PoseConfig:
     translation_m: tuple[float, float, float]
     rotation_xyzw: tuple[float, float, float, float]
@@ -299,6 +314,10 @@ class SimulationConfig:
     cameras: list[RuntimeCameraConfig] = field(
         default_factory=lambda: [RuntimeCameraConfig()]
     )
+
+    # LiDARs are opt-in — drivers that need point clouds (e.g. OnePlanner)
+    # populate this list; camera-only drivers leave it empty.
+    lidars: list[RuntimeLidarConfig] = field(default_factory=list)
 
     # if None, the data will be pulled from the .usdz file
     vehicle: VehicleConfig | None = None

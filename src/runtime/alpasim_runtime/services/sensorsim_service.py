@@ -289,6 +289,22 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
         definition = self._camera_catalog.get_camera_definition(
             scene_id, camera.logical_id
         )
+        # RENDER_DBG: log timestamp / trajectory range / interpolated poses to
+        # diagnose why splatsim renders black frames — pose_t appears static
+        # across a 20s rollout despite ego moving in map view. Remove once fixed.
+        try:
+            _ts_range = ego_trajectory.time_range_us
+            _raw_start = ego_trajectory.interpolate_pose(start_us)
+            _rig_to_cam_t = list(definition.rig_to_camera.vec3)
+            _composed = _raw_start @ definition.rig_to_camera
+            logger.info(
+                "RENDER_DBG start_us=%s end_us=%s traj_range=[%s..%s) "
+                "raw_ego_t=%s rig_to_cam_t=%s composed_t=%s",
+                start_us, end_us, _ts_range.start, _ts_range.stop,
+                list(_raw_start.vec3), _rig_to_cam_t, list(_composed.vec3),
+            )
+        except Exception as _e:
+            logger.info("RENDER_DBG failed to log trajectory: %s", _e)
         sensor_pose = trajectory_to_pose_pair(
             ego_trajectory,
             delta=definition.rig_to_camera,
