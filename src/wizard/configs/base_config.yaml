@@ -164,21 +164,14 @@ services:
       - "port={port}"
 
   physics:
+    # The physics service now lives in docker/carla/carla_physics_server and
+    # ships with the CARLA-bundled image. Select the `physics=carla` profile
+    # (configs/physics/carla.yaml) to run it — the default base image no
+    # longer carries a physics_server entry point.
     image: ${defines.base_image}
-    volumes:
-      - "${scenes.scene_cache}:/mnt/nre-data"
-      - "${repo-relative:'src'}:/repo/src"
-      - "${repo-relative:'plugins'}:/repo/plugins"
-    environments:
-      - WARP_CACHE_PATH='/mnt/warp'
     command:
-      - "uv run physics_server"
-      - "--host=0.0.0.0" # again, default container IP
-      - "--port={port}" # arbitrary, needs to be updated in runtime-config.yaml
-      - "--artifact-glob=/mnt/nre-data/{sceneset}/**/*.usdz"
-      - "--use-ground-mesh=true"
-      - "--cache-size=${defines.physics_cache_size}" # should match or exceed concurrent scenes to avoid cache thrashing
-      - "--log-level=${wizard.log_level}"
+      - "echo 'physics service requires physics=carla profile'"
+      - "exit 1"
 
   trafficsim:
     # Default to a noop placeholder so that runs without `trafficsim=carla`

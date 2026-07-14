@@ -6,18 +6,14 @@ on:
     tags:
       - "v*"
     paths:
-      - "physics.Dockerfile"
-      - "trafficsim.Dockerfile"
+      - "docker/carla/**"
       - "src/physics/**"
-      - "src/trafficsim/**"
       - "src/grpc/**"
       - ".github/workflows/publish-sim-images.yml"
   pull_request:
     paths:
-      - "physics.Dockerfile"
-      - "trafficsim.Dockerfile"
+      - "docker/carla/**"
       - "src/physics/**"
-      - "src/trafficsim/**"
       - "src/grpc/**"
       - ".github/workflows/publish-sim-images.yml"
   workflow_dispatch:
@@ -38,11 +34,11 @@ jobs:
       matrix:
         include:
           - image: physics-carla
-            dockerfile: physics.Dockerfile
+            dockerfile: docker/carla/physics.Dockerfile
             suffix: physics-carla
             free_disk: true
           - image: trafficsim
-            dockerfile: trafficsim.Dockerfile
+            dockerfile: docker/carla/trafficsim.Dockerfile
             suffix: trafficsim
             free_disk: false
     env:

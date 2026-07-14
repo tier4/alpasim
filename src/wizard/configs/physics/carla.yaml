@@ -1,19 +1,19 @@
 # @package _global_
 #
-# Builds the self-contained `physics.Dockerfile` image with CUDA runtime,
-# physics_server, and the CARLA 0.9.16 Unreal binary at /opt/carla. Keep the
-# command wrapper here: wizard's docker-compose backend overrides image
-# ENTRYPOINT whenever command is set.
+# Builds the self-contained `docker/carla/physics.Dockerfile` image with CUDA
+# runtime, carla_physics_server, and the CARLA 0.9.16 Unreal binary at
+# /opt/carla. Keep the command wrapper here: wizard's docker-compose backend
+# overrides image ENTRYPOINT whenever command is set.
 services:
   physics:
     image: ${defines.physics_carla_image}
-    dockerfile: physics.Dockerfile
+    dockerfile: docker/carla/physics.Dockerfile
     environments:
       - WARP_CACHE_PATH='/mnt/warp'
       - CARLA_PORT=2000
       - CARLA_ROOT=/opt/carla
     command:
-      - "bash /repo/src/physics/alpasim_physics/entrypoint.sh"
+      - "bash /opt/entrypoint.sh"
       - "--host=0.0.0.0"
       - "--port={port}"
       - "--artifact-glob=/mnt/nre-data/{sceneset}/**/*.usdz"

@@ -40,7 +40,9 @@ class WorldPose:
     qz: float
 
 
-def _euler_deg_to_quat(pitch_deg: float, yaw_deg: float, roll_deg: float) -> tuple[float, float, float, float]:
+def _euler_deg_to_quat(
+    pitch_deg: float, yaw_deg: float, roll_deg: float
+) -> tuple[float, float, float, float]:
     """Convert CARLA-style Euler (pitch, yaw, roll, degrees) to (w, x, y, z)."""
     half_p = math.radians(pitch_deg) * 0.5
     half_y = math.radians(yaw_deg) * 0.5
@@ -75,7 +77,9 @@ def world_pose_to_grpc(world_pose: WorldPose) -> common_pb2.Pose:
     """
     return common_pb2.Pose(
         vec=common_pb2.Vec3(x=world_pose.x, y=world_pose.y, z=world_pose.z),
-        quat=common_pb2.Quat(w=world_pose.qw, x=world_pose.qx, y=world_pose.qy, z=world_pose.qz),
+        quat=common_pb2.Quat(
+            w=world_pose.qw, x=world_pose.qx, y=world_pose.qy, z=world_pose.qz
+        ),
     )
 
 

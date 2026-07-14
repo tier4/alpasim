@@ -20,15 +20,14 @@ trafficsim:
 services:
   trafficsim:
     image: ${defines.trafficsim_image}
-    dockerfile: trafficsim.Dockerfile
+    dockerfile: docker/carla/trafficsim.Dockerfile
     volumes:
       - "${trafficsim.scenario_dir}:/mnt/scenarios"
       - "${defines.trafficsim_map_cache}:/mnt/maps"
-      - "${repo-relative:'src'}:/repo/src"
     environments:
       - PYTHONUNBUFFERED=1
     command:
-      - "uv run trafficsim_server"
+      - "uv run carla_trafficsim_server"
       - "--host=0.0.0.0"
       - "--port={port}"
       - "--carla-host=physics-0"
