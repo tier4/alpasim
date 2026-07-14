@@ -101,24 +101,24 @@ class PhysicsSimService(PhysicsServiceServicer):
                 grpc.StatusCode.INVALID_ARGUMENT,
                 "tick_interval_us must be non-zero — physics owns CARLA's tick cadence",
             )
-        clock = CarlaClock(
-            session_uuid=request.session_uuid,
-            carla_host=self._carla_host,
-            carla_port=self._carla_port,
-            fixed_delta_seconds=request.tick_interval_us / 1e6,
-        )
-        clock.open(self._ensure_carla_module())
         with self._clocks_lock:
             if request.session_uuid in self._clocks:
                 context.abort(
                     grpc.StatusCode.ALREADY_EXISTS,
                     f"session {request.session_uuid} already open",
                 )
+            clock = CarlaClock(
+                session_uuid=request.session_uuid,
+                carla_host=self._carla_host,
+                carla_port=self._carla_port,
+                tick_interval_us=request.tick_interval_us,
+            )
+            clock.open(self._ensure_carla_module())
             self._clocks[request.session_uuid] = clock
         logger.info(
-            "session %s: physics clock opened (fixed_delta=%.6fs)",
+            "session %s: physics clock opened (tick_interval_us=%d)",
             request.session_uuid,
-            clock.fixed_delta_seconds,
+            clock.tick_interval_us,
         )
         return SessionRequestStatus()
 
@@ -198,6 +198,10 @@ class PhysicsSimService(PhysicsServiceServicer):
                 clock.advance_to(request.advance_world_to_us)
             logger.debug("sending response")
             return response
+        except grpc.RpcError:
+            # context.abort() raises RpcError with the status already set; do
+            # not overwrite it in the generic handler below.
+            raise
         except Exception as e:
             context.set_code(grpc.StatusCode.UNKNOWN)
             context.set_details(str(e))

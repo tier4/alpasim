@@ -12,7 +12,7 @@ CARLA server binary) rather than through the traffic simulator.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,64 +25,64 @@ class CarlaClock:
     session_uuid: str
     carla_host: str
     carla_port: int
-    fixed_delta_seconds: float
+    tick_interval_us: int
 
     client: Any = None
     world: Any = None
     last_time_query_us: Optional[int] = None
-    _prev_settings: Any = field(default=None)
 
     def open(self, carla_module) -> None:
-        """Connect and switch CARLA to synchronous mode at ``fixed_delta_seconds``."""
-        step_us = int(self.fixed_delta_seconds * 1e6)
-        if step_us <= 0:
+        """Connect and switch CARLA to synchronous mode at ``tick_interval_us``."""
+        if self.tick_interval_us <= 0:
             raise ValueError(
-                "fixed_delta_seconds must be positive, got "
-                f"{self.fixed_delta_seconds!r}"
+                f"tick_interval_us must be positive, got {self.tick_interval_us!r}"
             )
+        fixed_delta_seconds = self.tick_interval_us / 1e6
         logger.info(
             "session %s: connecting to CARLA at %s:%d (fixed_delta=%.6fs)",
             self.session_uuid,
             self.carla_host,
             self.carla_port,
-            self.fixed_delta_seconds,
+            fixed_delta_seconds,
         )
         self.client = carla_module.Client(self.carla_host, self.carla_port)
         self.client.set_timeout(30.0)
         self.world = self.client.get_world()
         settings = self.world.get_settings()
-        # Remember the original settings so close() can restore them even if
-        # apply_settings changes more than one field.
-        self._prev_settings = settings
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = self.fixed_delta_seconds
+        settings.fixed_delta_seconds = fixed_delta_seconds
         self.world.apply_settings(settings)
 
     def advance_to(self, target_time_us: int) -> None:
-        """Tick CARLA to ``target_time_us`` in units of ``fixed_delta_seconds``.
+        """Tick CARLA to ``target_time_us`` in units of ``tick_interval_us``.
 
         The first call seeds the clock without ticking — alpasim log
         timestamps and CARLA's world clock use different epochs, so we can't
-        assume the target equals ``step_us * n``. Every subsequent call must
-        land on a step boundary from that origin or the two rates drift.
+        assume the target equals ``tick_interval_us * n``. Every subsequent
+        call must land on a step boundary from that origin or the two rates
+        drift.
         """
-        step_us = int(self.fixed_delta_seconds * 1e6)
+        if self.world is None:
+            raise RuntimeError(
+                f"session {self.session_uuid}: CarlaClock.advance_to called on a "
+                "closed clock; call open() first"
+            )
         if self.last_time_query_us is None:
             self.last_time_query_us = target_time_us
             return
         delta_us = target_time_us - self.last_time_query_us
         if delta_us <= 0:
             return
-        if delta_us % step_us != 0:
+        if delta_us % self.tick_interval_us != 0:
             raise ValueError(
                 f"target_time_us={target_time_us} is not aligned to "
-                f"fixed_delta={step_us}us "
+                f"tick_interval_us={self.tick_interval_us} "
                 f"(last_time_query_us={self.last_time_query_us})"
             )
-        steps = delta_us // step_us
+        steps = delta_us // self.tick_interval_us
         for _ in range(steps):
             self.world.tick()
-        self.last_time_query_us += steps * step_us
+        self.last_time_query_us += steps * self.tick_interval_us
 
     def close(self) -> None:
         """Restore async mode; safe to call multiple times."""
