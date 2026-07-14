@@ -85,6 +85,7 @@ class PhysicsEvent(RecurringEvent):
             ego_trajectory_aabb=traj_aabb,
             traffic_poses={},
             ego_aabb=state.unbound.ego_aabb,
+            advance_world_to_us=ctx.target_time_us,
         )
 
         ctx.corrected_ego_trajectory = corrected_aabb.transform(

@@ -59,13 +59,6 @@ message TrafficSessionRequest {
     // `traffic_models.minimum_hisotry_length` steps of log-history, but not
     // before `handover_time_us`.
     optional fixed64 handover_time_us = 5;
-
-    // Interval between CARLA world.tick() calls, in microseconds. When set, the
-    // trafficsim server ignores any scenario-supplied `fixed_delta_seconds` and
-    // ticks CARLA at exactly this cadence. This lets alpasim's control loop own
-    // the physics clock so alpasim-requested and CARLA-simulated times stay in
-    // lock-step. Zero (unset) preserves the pre-existing scenario default.
-    fixed64 tick_interval_us = 6;
 }
 
 message TrafficSessionCloseRequest {

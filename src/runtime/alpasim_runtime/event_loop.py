@@ -45,6 +45,7 @@ from alpasim_runtime.services.physics_service import PhysicsService
 from alpasim_runtime.services.renderer import RendererService
 from alpasim_runtime.services.session_configs import (
     DriverSessionConfig,
+    PhysicsSessionConfig,
     RendererSessionConfig,
     TrafficSessionConfig,
 )
@@ -481,13 +482,22 @@ class EventBasedRollout:
                 )
             )
 
-            for service in [self.physics, self.controller]:
-                await async_stack.enter_async_context(
-                    service.rollout_session(
-                        uuid=str(self.unbound.rollout_uuid),
-                        broadcaster=self.broadcaster,
-                    )
+            await async_stack.enter_async_context(
+                self.physics.rollout_session(
+                    uuid=str(self.unbound.rollout_uuid),
+                    broadcaster=self.broadcaster,
+                    session_config=PhysicsSessionConfig(
+                        control_timestep_us=self.unbound.control_timestep_us,
+                    ),
                 )
+            )
+
+            await async_stack.enter_async_context(
+                self.controller.rollout_session(
+                    uuid=str(self.unbound.rollout_uuid),
+                    broadcaster=self.broadcaster,
+                )
+            )
 
             # camera_catalog is now populated by the renderer's session init.
             available_camera_protos = [
@@ -521,7 +531,6 @@ class EventBasedRollout:
                         ego_aabb=self.unbound.ego_aabb,
                         gt_ego_aabb_trajectory=gt_ego_aabb_trajectory,
                         start_timestamp_us=self.unbound.egomotion_context_start_us,
-                        control_timestep_us=self.unbound.control_timestep_us,
                     ),
                 )
             )

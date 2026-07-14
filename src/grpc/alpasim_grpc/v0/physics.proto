@@ -8,9 +8,28 @@ package physics;
 import "alpasim_grpc/v0/common.proto";
 
 service PhysicsService {
+    // Session lifecycle. The physics container hosts the CARLA server and
+    // owns its `world.tick()` cadence — start_session/close_session set up
+    // and tear down the CARLA client and its synchronous-mode settings.
+    rpc start_session (PhysicsSessionRequest) returns (common.SessionRequestStatus);
+    rpc close_session (PhysicsSessionCloseRequest) returns (common.SessionRequestStatus);
+
     rpc ground_intersection (PhysicsGroundIntersectionRequest) returns (PhysicsGroundIntersectionReturn);
     rpc get_version (common.Empty) returns (common.VersionId);
     rpc get_available_scenes (common.Empty) returns (common.AvailableScenesReturn);
+}
+
+message PhysicsSessionRequest {
+    string session_uuid = 1;
+    // Interval between CARLA world.tick() calls, in microseconds. The physics
+    // container applies this as CARLA's `fixed_delta_seconds` when it opens
+    // its client — alpasim's control loop owns the clock so requested and
+    // simulated times stay in lock-step.
+    fixed64 tick_interval_us = 2;
+}
+
+message PhysicsSessionCloseRequest {
+    string session_uuid = 1;
 }
 
 message PhysicsGroundIntersectionRequest {
@@ -46,6 +65,17 @@ message PhysicsGroundIntersectionRequest {
 
     optional EgoData ego_data = 4;
     repeated OtherObject other_objects = 5;
+
+    // When non-zero, the physics server advances the CARLA world clock to this
+    // timestamp (via world.tick()) after computing ground correction. Set only
+    // on the ego-facing ground_intersection call each control step so the world
+    // is ticked exactly once per step. Zero means "do not tick CARLA".
+    fixed64 advance_world_to_us = 6;
+
+    // Session UUID that keyed the earlier start_session call. Required when
+    // advance_world_to_us is non-zero so the physics server can locate the
+    // CARLA client to tick.
+    string session_uuid = 7;
 }
 
 message PhysicsGroundIntersectionReturn {

@@ -124,5 +124,7 @@ message LogEntry {
         // LidarRenderReturn is saved separately as a side artifact (mirrors RGBRenderReturn).
 
         egodriver.RolloutLidarPointCloud driver_lidar_point_cloud = 32;
+
+        physics.PhysicsSessionRequest physics_session_request = 33;
     }
 }

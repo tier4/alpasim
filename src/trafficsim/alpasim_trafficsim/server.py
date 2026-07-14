@@ -73,26 +73,12 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
                 )
                 return common_pb2.SessionRequestStatus()  # unreachable; defensive
 
-        # Resolve the effective CARLA tick interval so ``session.open()`` applies
-        # the right value to the world settings: the caller's request wins (so
-        # alpasim can force lock-step); otherwise fall back to the scenario's
-        # value; otherwise CarlaSession's dataclass default.
-        if request.tick_interval_us > 0:
-            fixed_delta_seconds = request.tick_interval_us / 1e6
-        elif self._scenario_runner is not None:
-            fixed_delta_seconds = self._scenario_runner.fixed_delta_seconds
-        else:
-            fixed_delta_seconds = CarlaSession.__dataclass_fields__[
-                "fixed_delta_seconds"
-            ].default
-
         session = CarlaSession(
             session_uuid=request.session_uuid,
             map_id=request.map_id,
             carla_host=self._carla_host,
             carla_port=self._carla_port,
             tm_port=self._tm_port,
-            fixed_delta_seconds=fixed_delta_seconds,
         )
         session.open(self._carla_module)
 
@@ -122,7 +108,9 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
         for update in request.object_trajectory_updates:
             session.apply_pose_update(update)
 
-        session.tick_until(request.time_query_us)
+        # Physics container ticks CARLA; we just record the target so
+        # snapshot() can stamp poses at the caller's clock.
+        session.note_time_query(request.time_query_us)
         return session.snapshot()
 
     def close_session(self, request: traffic_pb2.TrafficSessionCloseRequest, context):

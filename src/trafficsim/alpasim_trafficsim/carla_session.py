@@ -53,7 +53,6 @@ class CarlaSession:
     carla_host: str
     carla_port: int
     tm_port: int
-    fixed_delta_seconds: float = 0.05
 
     client: Any = None
     world: Any = None
@@ -63,7 +62,13 @@ class CarlaSession:
     _actors_by_id: dict[str, SpawnedActor] = field(default_factory=dict)
 
     def open(self, carla_module) -> None:
-        """Connect to CARLA, load the map and switch to synchronous mode."""
+        """Connect to CARLA for spawning + pose read/write.
+
+        The physics container owns CARLA's synchronous-mode and
+        ``fixed_delta_seconds`` settings (and calls ``world.tick()`` each
+        control step). This client attaches to the already-configured world
+        and never ticks it.
+        """
         logger.info(
             "session %s: connecting to CARLA at %s:%d (tm=%d)",
             self.session_uuid,
@@ -78,11 +83,6 @@ class CarlaSession:
         # take the world that's already loaded.
         self.world = self.client.get_world()
         self.traffic_manager = self.client.get_trafficmanager(self.tm_port)
-        self.traffic_manager.set_synchronous_mode(True)
-        settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = self.fixed_delta_seconds
-        self.world.apply_settings(settings)
 
     def register_actor(
         self,
@@ -126,38 +126,15 @@ class CarlaSession:
         target_pose = update.trajectory.poses[-1].pose
         entry.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
-    def tick_until(self, target_time_us: int) -> None:
-        """Advance CARLA by the delta between consecutive ``target_time_us`` calls.
+    def note_time_query(self, target_time_us: int) -> None:
+        """Record the caller's target time so snapshot() can stamp poses.
 
-        Alpasim log timestamps and CARLA's world clock use different epochs, so
-        the invariant is not "CARLA world == alpasim log time" but "each call
-        advances CARLA by ``(target - previous_target) / step_us`` ticks". The
-        first call captures the caller's clock origin without ticking; every
-        subsequent call must land on a ``fixed_delta``-step boundary from that
-        origin, or the two rates would drift.
+        Trafficsim no longer advances CARLA — the physics container ticks the
+        world. We still track ``target_time_us`` so the snapshot's per-pose
+        ``timestamp_us`` matches the caller's clock rather than CARLA's
+        internal one.
         """
-        step_us = int(self.fixed_delta_seconds * 1e6)
-        if step_us <= 0:
-            raise ValueError(
-                "fixed_delta_seconds must be positive, got "
-                f"{self.fixed_delta_seconds!r}"
-            )
-        if self.last_time_query_us is None:
-            self.last_time_query_us = target_time_us
-            return
-        delta_us = target_time_us - self.last_time_query_us
-        if delta_us <= 0:
-            return
-        if delta_us % step_us != 0:
-            raise ValueError(
-                f"target_time_us={target_time_us} is not aligned to "
-                f"fixed_delta={step_us}us "
-                f"(last_time_query_us={self.last_time_query_us})"
-            )
-        steps = delta_us // step_us
-        for _ in range(steps):
-            self.world.tick()
-        self.last_time_query_us += steps * step_us
+        self.last_time_query_us = target_time_us
 
     def snapshot(self) -> traffic_pb2.TrafficReturn:
         """Collect the current pose of every registered actor."""
@@ -198,14 +175,8 @@ class CarlaSession:
                 logger.exception("failed to destroy actor %s", entry.object_id)
         self.actors.clear()
         self._actors_by_id.clear()
-        if self.world is not None:
-            try:
-                settings = self.world.get_settings()
-                settings.synchronous_mode = False
-                settings.fixed_delta_seconds = None
-                self.world.apply_settings(settings)
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to restore async world settings")
+        # Synchronous-mode / fixed_delta_seconds are owned by the physics
+        # container; it restores async mode on its own close_session.
         if self.traffic_manager is not None:
             try:
                 self.traffic_manager.set_synchronous_mode(False)

@@ -4,6 +4,7 @@
 import argparse
 import functools
 import logging
+import threading
 from concurrent import futures
 
 from alpasim_grpc.v0.common_pb2 import (
@@ -11,12 +12,15 @@ from alpasim_grpc.v0.common_pb2 import (
     Empty,
     Pose,
     PoseAtTime,
+    SessionRequestStatus,
     Trajectory,
     VersionId,
 )
 from alpasim_grpc.v0.physics_pb2 import (
     PhysicsGroundIntersectionRequest,
     PhysicsGroundIntersectionReturn,
+    PhysicsSessionCloseRequest,
+    PhysicsSessionRequest,
 )
 from alpasim_grpc.v0.physics_pb2_grpc import (
     PhysicsServiceServicer,
@@ -24,6 +28,7 @@ from alpasim_grpc.v0.physics_pb2_grpc import (
 )
 from alpasim_physics import VERSION_MESSAGE
 from alpasim_physics.backend import PhysicsBackend
+from alpasim_physics.carla_clock import CarlaClock
 from alpasim_physics.utils import (
     aabb_to_ndarray,
     ndarray_to_vec3,
@@ -43,10 +48,17 @@ class PhysicsSimService(PhysicsServiceServicer):
     def __init__(
         self,
         artifact_glob: str,
+        carla_host: str,
+        carla_port: int,
         cache_size: int = 2,
         use_ground_mesh: bool = False,
         visualize: bool = False,
     ) -> None:
+        self._carla_host = carla_host
+        self._carla_port = carla_port
+        self._carla_module = None  # lazily imported on first session
+        self._clocks_lock = threading.Lock()
+        self._clocks: dict[str, CarlaClock] = {}
         self.artifacts = Artifact.discover_from_glob(
             artifact_glob, use_ground_mesh=use_ground_mesh
         )
@@ -73,6 +85,52 @@ class PhysicsSimService(PhysicsServiceServicer):
             )
 
         self.get_backend = get_backend
+
+    def _ensure_carla_module(self):
+        if self._carla_module is None:
+            import carla  # heavy; imported only when a session actually needs it
+
+            self._carla_module = carla
+        return self._carla_module
+
+    def start_session(
+        self, request: PhysicsSessionRequest, context: grpc.ServicerContext
+    ) -> SessionRequestStatus:
+        if request.tick_interval_us == 0:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "tick_interval_us must be non-zero — physics owns CARLA's tick cadence",
+            )
+        clock = CarlaClock(
+            session_uuid=request.session_uuid,
+            carla_host=self._carla_host,
+            carla_port=self._carla_port,
+            fixed_delta_seconds=request.tick_interval_us / 1e6,
+        )
+        clock.open(self._ensure_carla_module())
+        with self._clocks_lock:
+            if request.session_uuid in self._clocks:
+                context.abort(
+                    grpc.StatusCode.ALREADY_EXISTS,
+                    f"session {request.session_uuid} already open",
+                )
+            self._clocks[request.session_uuid] = clock
+        logger.info(
+            "session %s: physics clock opened (fixed_delta=%.6fs)",
+            request.session_uuid,
+            clock.fixed_delta_seconds,
+        )
+        return SessionRequestStatus()
+
+    def close_session(
+        self, request: PhysicsSessionCloseRequest, context: grpc.ServicerContext
+    ) -> SessionRequestStatus:
+        with self._clocks_lock:
+            clock = self._clocks.pop(request.session_uuid, None)
+        if clock is not None:
+            clock.close()
+            logger.info("session %s: physics clock closed", request.session_uuid)
+        return SessionRequestStatus()
 
     def ground_intersection(
         self, request: PhysicsGroundIntersectionRequest, context: grpc.ServicerContext
@@ -128,6 +186,16 @@ class PhysicsSimService(PhysicsServiceServicer):
                         for pose, status in other_updates
                     ],
                 )
+            if request.advance_world_to_us != 0:
+                with self._clocks_lock:
+                    clock = self._clocks.get(request.session_uuid)
+                if clock is None:
+                    context.abort(
+                        grpc.StatusCode.FAILED_PRECONDITION,
+                        f"advance_world_to_us set but session {request.session_uuid} "
+                        "has no open CARLA clock; call start_session first",
+                    )
+                clock.advance_to(request.advance_world_to_us)
             logger.debug("sending response")
             return response
         except Exception as e:
@@ -163,6 +231,18 @@ def parse_args(
     )
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--carla-host",
+        type=str,
+        default="localhost",
+        help="Host where the CARLA server listens (same container in the default topology).",
+    )
+    parser.add_argument(
+        "--carla-port",
+        type=int,
+        default=2000,
+        help="Port where the CARLA server listens.",
+    )
     parser.add_argument("--use-ground-mesh", type=bool, default=False)
     parser.add_argument("--visualize", type=bool, default=False)
     parser.add_argument(
@@ -198,6 +278,8 @@ def main(arg_list: list[str] | None = None) -> None:
 
     service = PhysicsSimService(
         args.artifact_glob,
+        carla_host=args.carla_host,
+        carla_port=args.carla_port,
         cache_size=args.cache_size,
         use_ground_mesh=args.use_ground_mesh,
         visualize=args.visualize,
