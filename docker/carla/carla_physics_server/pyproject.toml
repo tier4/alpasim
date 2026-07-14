@@ -23,6 +23,12 @@ dependencies = [
 [project.scripts]
 carla_physics_server = "carla_physics_server.server:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["carla_physics_server*"]
+# Flat layout: pyproject.toml sits inside the package directory alongside the
+# .py files (no nested carla_physics_server/ subdir). Map the package name
+# to "." so setuptools ships the modules at this level instead of running
+# packages.find, which would look for a subdirectory that doesn't exist.
+[tool.setuptools]
+packages = ["carla_physics_server"]
+
+[tool.setuptools.package-dir]
+"carla_physics_server" = "."
