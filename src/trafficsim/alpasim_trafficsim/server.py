@@ -73,16 +73,18 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
                 )
                 return common_pb2.SessionRequestStatus()  # unreachable; defensive
 
-        # Resolve the effective CARLA tick interval: alpasim's request wins so
-        # the client can force lock-step; otherwise fall back to the scenario's
-        # value; otherwise the dataclass default.
-        session_kwargs: dict = {}
+        # Resolve the effective CARLA tick interval so ``session.open()`` applies
+        # the right value to the world settings: the caller's request wins (so
+        # alpasim can force lock-step); otherwise fall back to the scenario's
+        # value; otherwise CarlaSession's dataclass default.
         if request.tick_interval_us > 0:
-            session_kwargs["fixed_delta_seconds"] = request.tick_interval_us / 1e6
+            fixed_delta_seconds = request.tick_interval_us / 1e6
         elif self._scenario_runner is not None:
-            session_kwargs["fixed_delta_seconds"] = (
-                self._scenario_runner.fixed_delta_seconds
-            )
+            fixed_delta_seconds = self._scenario_runner.fixed_delta_seconds
+        else:
+            fixed_delta_seconds = CarlaSession.__dataclass_fields__[
+                "fixed_delta_seconds"
+            ].default
 
         session = CarlaSession(
             session_uuid=request.session_uuid,
@@ -90,7 +92,7 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
             carla_host=self._carla_host,
             carla_port=self._carla_port,
             tm_port=self._tm_port,
-            **session_kwargs,
+            fixed_delta_seconds=fixed_delta_seconds,
         )
         session.open(self._carla_module)
 

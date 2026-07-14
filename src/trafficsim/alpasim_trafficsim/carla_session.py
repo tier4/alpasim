@@ -59,7 +59,7 @@ class CarlaSession:
     world: Any = None
     traffic_manager: Any = None
     actors: list[SpawnedActor] = field(default_factory=list)
-    last_time_query_us: int = 0
+    last_time_query_us: int | None = None
     _actors_by_id: dict[str, SpawnedActor] = field(default_factory=dict)
 
     def open(self, carla_module) -> None:
@@ -127,17 +127,14 @@ class CarlaSession:
         entry.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
     def tick_until(self, target_time_us: int) -> None:
-        """Advance CARLA to ``target_time_us`` while keeping the two clocks aligned.
+        """Advance CARLA by the delta between consecutive ``target_time_us`` calls.
 
-        ``last_time_query_us`` tracks CARLA's *simulated* world clock — i.e.
-        ``previous_last + steps * fixed_delta`` — rather than whatever alpasim
-        asked for. That is what keeps the caller's intended timestamp from
-        drifting away from CARLA's actual world time whenever the two disagree.
-
-        Requires ``target_time_us`` to land on a tick boundary
-        (``fixed_delta_seconds``). Misaligned targets raise instead of silently
-        rounding, because rounding is exactly how the two clocks drifted apart
-        before.
+        Alpasim log timestamps and CARLA's world clock use different epochs, so
+        the invariant is not "CARLA world == alpasim log time" but "each call
+        advances CARLA by ``(target - previous_target) / step_us`` ticks". The
+        first call captures the caller's clock origin without ticking; every
+        subsequent call must land on a ``fixed_delta``-step boundary from that
+        origin, or the two rates would drift.
         """
         step_us = int(self.fixed_delta_seconds * 1e6)
         if step_us <= 0:
@@ -145,11 +142,11 @@ class CarlaSession:
                 "fixed_delta_seconds must be positive, got "
                 f"{self.fixed_delta_seconds!r}"
             )
+        if self.last_time_query_us is None:
+            self.last_time_query_us = target_time_us
+            return
         delta_us = target_time_us - self.last_time_query_us
         if delta_us <= 0:
-            # A query for a timestamp we already passed (or exactly matched) is
-            # a no-op: CARLA can't rewind, and rewinding would defeat the
-            # alignment guarantee.
             return
         if delta_us % step_us != 0:
             raise ValueError(
@@ -176,7 +173,7 @@ class CarlaSession:
                         poses=[
                             common_pb2.PoseAtTime(
                                 pose=pose_msg,
-                                timestamp_us=self.last_time_query_us,
+                                timestamp_us=self.last_time_query_us or 0,
                             )
                         ]
                     ),

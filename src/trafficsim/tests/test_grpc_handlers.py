@@ -484,8 +484,7 @@ def test_register_actor_back_compat_defaults_grpc_driven_from_is_ego(fake_carla)
 # =============================================================================
 
 
-def test_tick_until_advances_by_exact_step_multiples():
-    """One RPC call at target_time_us = last + N * step_us advances N ticks."""
+def _make_session(fixed_delta_seconds: float = 0.05):
     from alpasim_trafficsim.carla_session import CarlaSession
 
     session = CarlaSession(
@@ -494,119 +493,78 @@ def test_tick_until_advances_by_exact_step_multiples():
         carla_host="h",
         carla_port=1,
         tm_port=2,
-        fixed_delta_seconds=0.05,
+        fixed_delta_seconds=fixed_delta_seconds,
     )
     session.world = mock.MagicMock()
-    session.last_time_query_us = 0
-
-    session.tick_until(100_000)  # 2 * 50ms
-
-    assert session.world.tick.call_count == 2
-    assert session.last_time_query_us == 100_000
+    return session
 
 
-def test_tick_until_tracks_world_clock_not_target():
-    """After N calls with aligned targets, last_time_query_us equals CARLA world time."""
-    from alpasim_trafficsim.carla_session import CarlaSession
+def test_tick_until_first_call_seeds_clock_without_ticking():
+    """The first call captures the caller's clock origin — CARLA is not ticked.
 
-    session = CarlaSession(
-        session_uuid="s",
-        map_id="Town01",
-        carla_host="h",
-        carla_port=1,
-        tm_port=2,
-        fixed_delta_seconds=0.1,  # 100ms tick
-    )
-    session.world = mock.MagicMock()
-    session.last_time_query_us = 0
+    Alpasim uses real log timestamps (microseconds from an arbitrary epoch);
+    CARLA's world clock starts at 0. The two clocks share only their rate, so
+    seeding on the first request is what lets subsequent deltas be checked.
+    """
+    session = _make_session(fixed_delta_seconds=0.05)
 
-    for target in (100_000, 200_000, 300_000, 400_000):
-        session.tick_until(target)
-
-    # 4 requests of 1 tick each, world advanced by 4 * 100ms.
-    assert session.world.tick.call_count == 4
-    assert session.last_time_query_us == 400_000
-
-
-def test_tick_until_idempotent_when_delta_is_zero():
-    """A query for the current timestamp does not tick — no silent world drift."""
-    from alpasim_trafficsim.carla_session import CarlaSession
-
-    session = CarlaSession(
-        session_uuid="s",
-        map_id="Town01",
-        carla_host="h",
-        carla_port=1,
-        tm_port=2,
-        fixed_delta_seconds=0.05,
-    )
-    session.world = mock.MagicMock()
-    session.last_time_query_us = 100_000
-
-    session.tick_until(100_000)
+    session.tick_until(1_729_860_123_456_789)
 
     session.world.tick.assert_not_called()
-    assert session.last_time_query_us == 100_000
+    assert session.last_time_query_us == 1_729_860_123_456_789
 
 
-def test_tick_until_no_op_for_past_target():
-    """Late-arriving queries for a timestamp we already passed are a no-op."""
-    from alpasim_trafficsim.carla_session import CarlaSession
+@pytest.mark.parametrize(
+    "fixed_delta_seconds, seed, target, expected_ticks",
+    [
+        (0.05, 0, 100_000, 2),  # 2 * 50ms
+        (0.1, 0, 100_000, 1),  # 1 * 100ms
+        (0.025, 0, 100_000, 4),  # 4 * 25ms
+        (0.05, 1_729_860_123_400_000, 1_729_860_123_500_000, 2),  # log epoch
+    ],
+)
+def test_tick_until_advances_by_exact_step_multiples(
+    fixed_delta_seconds, seed, target, expected_ticks
+):
+    session = _make_session(fixed_delta_seconds=fixed_delta_seconds)
+    session.last_time_query_us = seed
 
-    session = CarlaSession(
-        session_uuid="s",
-        map_id="Town01",
-        carla_host="h",
-        carla_port=1,
-        tm_port=2,
-        fixed_delta_seconds=0.05,
-    )
-    session.world = mock.MagicMock()
+    session.tick_until(target)
+
+    assert session.world.tick.call_count == expected_ticks
+    assert session.last_time_query_us == target
+
+
+def test_tick_until_no_op_when_delta_zero_or_past():
+    """Repeat queries at or before the last target do not advance the world."""
+    session = _make_session(fixed_delta_seconds=0.05)
     session.last_time_query_us = 200_000
 
-    session.tick_until(100_000)
+    session.tick_until(200_000)  # same
+    session.tick_until(100_000)  # past
 
     session.world.tick.assert_not_called()
     assert session.last_time_query_us == 200_000
 
 
 def test_tick_until_rejects_misaligned_target():
-    """Targets that do not land on a tick boundary raise instead of silently rounding."""
-    from alpasim_trafficsim.carla_session import CarlaSession
-
-    session = CarlaSession(
-        session_uuid="s",
-        map_id="Town01",
-        carla_host="h",
-        carla_port=1,
-        tm_port=2,
-        fixed_delta_seconds=0.05,  # 50ms
-    )
-    session.world = mock.MagicMock()
+    """Off-grid targets raise instead of silently rounding — that's the drift."""
+    session = _make_session(fixed_delta_seconds=0.05)
     session.last_time_query_us = 0
 
     with pytest.raises(ValueError, match="not aligned"):
-        session.tick_until(75_000)  # 1.5 * step_us
+        session.tick_until(75_000)  # 1.5 * 50ms
 
     session.world.tick.assert_not_called()
 
 
-def test_tick_until_uses_configured_step():
-    """fixed_delta_seconds passed via constructor drives the tick interval."""
-    from alpasim_trafficsim.carla_session import CarlaSession
-
-    session = CarlaSession(
-        session_uuid="s",
-        map_id="Town01",
-        carla_host="h",
-        carla_port=1,
-        tm_port=2,
-        fixed_delta_seconds=0.025,  # 25ms
-    )
-    session.world = mock.MagicMock()
+def test_tick_until_tracks_world_clock_over_repeated_calls():
+    """last_time_query_us advances by steps*step_us, not by whatever the caller asks."""
+    session = _make_session(fixed_delta_seconds=0.1)
     session.last_time_query_us = 0
 
-    session.tick_until(100_000)  # 4 * 25ms
+    for target in (100_000, 200_000, 300_000, 400_000):
+        session.tick_until(target)
 
     assert session.world.tick.call_count == 4
-    assert session.last_time_query_us == 100_000
+    assert session.last_time_query_us == 400_000
