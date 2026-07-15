@@ -42,9 +42,10 @@ def _build_available_cameras_from_usdz(
 ) -> list["sensorsim_pb2.AvailableCamerasReturn.AvailableCamera"]:
     """Read camera_calibrations from the USDZ rig_trajectories.json.
 
-    Returns AvailableCamera entries with the ``T_sensor_rig`` extrinsics and
-    pinhole intrinsics from the USDZ. Non-fatal on any parse failure — an empty
-    list falls back to the original "no catalog" behavior.
+    Returns AvailableCamera entries with camera-in-rig extrinsics (inverted
+    from the USDZ's rig→sensor ``T_sensor_rig`` field, see below) and pinhole
+    intrinsics from the USDZ. Non-fatal on any parse failure — an empty list
+    falls back to the original "no catalog" behavior.
     """
     if usdz_path is None:
         return []
@@ -80,9 +81,15 @@ def _build_available_cameras_from_usdz(
             width, height = params["resolution"]
             fx, fy, cx, cy = params["fx"], params["fy"], params["cx"], params["cy"]
 
-            T = np.asarray(cam["T_sensor_rig"], dtype=np.float64)
-            R = T[:3, :3]
-            t = T[:3, 3]
+            # ``T_sensor_rig`` in NuRec/3dgs_io exports is the rig→sensor
+            # matrix (OpenCV +Z forward), NOT sensor-in-rig — verified
+            # empirically both against splatsim's own ``iter_world_to_camera``
+            # and in splatsim/_usdz.py's implementation. Invert it here so
+            # that alpasim's downstream ``ego.compose(rig_to_camera)`` sees
+            # a proper camera-in-rig transform.
+            T_raw = np.asarray(cam["T_sensor_rig"], dtype=np.float64)
+            R = T_raw[:3, :3].T
+            t = -R @ T_raw[:3, 3]
             # Matrix -> quaternion (xyzw). Uses Shepperd's method to avoid
             # scipy dependency here.
             trace = R[0, 0] + R[1, 1] + R[2, 2]
