@@ -24,6 +24,7 @@ services:
       - "${defines.splatsim_scene_usdz}:/mnt/splatsim/scene.usdz"
       - "/tmp/splatsim_usdz_v020.py:/repo/src/splatsim_renderer/.venv/lib/python3.10/site-packages/splatsim/_usdz.py"
       - "${repo-relative:'src/splatsim_renderer/alpasim_splatsim_renderer/server.py'}:/repo/src/splatsim_renderer/alpasim_splatsim_renderer/server.py"
+      - "${repo-relative:'src/splatsim_renderer/alpasim_splatsim_renderer/render_adapter.py'}:/repo/src/splatsim_renderer/alpasim_splatsim_renderer/render_adapter.py"
     # NOTE: Unlike other services which mount ``${repo-relative:'src'}:/repo/src``
     # for hot-reload against the shared base image's global venv, the splatsim
     # renderer uses a dedicated image with a per-project venv baked in at
