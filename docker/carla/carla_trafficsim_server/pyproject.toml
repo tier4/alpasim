@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carla-trafficsim-server"
+version = "0.1.0"
+description = "CARLA TrafficManager backed gRPC entry point for the Alpasim traffic service. Not part of the alpasim src/ workspace."
+# Pinned to Python 3.10 because autoware_carla_scenario depends on
+# lanelet2-python-api-for-autoware which ships a CPython 3.10 ABI wheel only.
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "alpasim_grpc",
+  # alpasim_utils is intentionally NOT a dependency: it pulls in the
+  # utils_rs Rust extension which currently ships wheels for Python 3.11+ only.
+  # The trafficsim container needs Python 3.10, so it ships a small in-package
+  # proto helper (carla_trafficsim_server.grpc_adapter) instead.
+  "grpcio",
+  "numpy",
+  "omegaconf",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+# autoware_carla_scenario pulls in carla==0.9.16 through its own
+# `carla-0-9-16` extras and the lanelet2 binding.
+carla = [
+  "autoware_carla_scenario[carla-0-9-16]",
+]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[project.scripts]
+carla_trafficsim_server = "carla_trafficsim_server.server:main"
+
+[tool.uv.sources]
+alpasim_grpc = { path = "../../../src/grpc", editable = true }
+autoware_carla_scenario = { git = "https://github.com/tier4/autoware_lanelet2_to_opendrive.git", subdirectory = "autoware_carla_scenario", rev = "6875ab0aa4eab8812f4c9b0fa7d34398dbb620f5" }
+
+# Flat layout: pyproject.toml sits inside the package directory alongside the
+# .py files (no nested carla_trafficsim_server/ subdir). Map the package name
+# to "." so setuptools ships the modules at this level instead of running
+# packages.find, which would look for a subdirectory that doesn't exist.
+[tool.setuptools]
+packages = ["carla_trafficsim_server"]
+
+[tool.setuptools.package-dir]
+"carla_trafficsim_server" = "."

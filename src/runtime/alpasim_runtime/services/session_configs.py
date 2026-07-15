@@ -40,6 +40,18 @@ class TrafficSessionConfig:
 
 
 @dataclass(frozen=True)
+class PhysicsSessionConfig:
+    """Typed session configuration for the physics service.
+
+    The physics container owns CARLA's world clock; ``control_timestep_us``
+    is forwarded as ``tick_interval_us`` in ``PhysicsSessionRequest`` so
+    CARLA's ``fixed_delta_seconds`` matches alpasim's control loop cadence.
+    """
+
+    control_timestep_us: int
+
+
+@dataclass(frozen=True)
 class RendererSessionConfig:
     """Common per-rollout session configuration for renderer services.
 

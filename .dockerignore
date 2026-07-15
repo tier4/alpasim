@@ -11,6 +11,7 @@
 !src/ddb/**
 !src/eval/**
 !src/physics/**
+!src/trafficsim/**
 !src/controller/**
 !src/tools/**
 !src/plugins/**
@@ -21,6 +22,7 @@
 !e2e_challenge/
 !e2e_challenge/starter_kit/
 !e2e_challenge/starter_kit/**
+!docker/carla/**
 !pyproject.toml
 
 # Exclude specific runtime directories/files we don't need

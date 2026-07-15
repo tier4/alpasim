@@ -1,45 +1,53 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "alpasim-trafficsim"
-version = "0.1.0"
-description = "Traffic simulation micro-service for Alpasim (CARLA TrafficManager backend)"
-# Pinned to Python 3.10 because autoware_carla_scenario depends on
-# lanelet2-python-api-for-autoware which ships a CPython 3.10 ABI wheel only.
-requires-python = ">=3.10,<3.11"
+version = "0.2.0"
+description = "Traffic simulation micro-service for Alpasim"
+requires-python = ">=3.11,<3.13"
 dependencies = [
   "alpasim_grpc",
-  # alpasim_utils is intentionally NOT a dependency: it pulls in the
-  # utils_rs Rust extension which currently ships wheels for Python 3.11+ only.
-  # The trafficsim container needs Python 3.10, so it ships a small in-package
-  # proto helper (alpasim_trafficsim.grpc_adapter) instead.
-  "grpcio",
+  "alpasim-runtime",
+  "alpasim-utils[geometry]",
+  "trajdata-alpasim",
+  "grpcio>=1.70.0",
+  "torch",
+  "torch-geometric",
   "numpy",
   "omegaconf",
+  "hydra-core",
   "pyyaml",
+  "loguru",
 ]
 
-[project.optional-dependencies]
-# autoware_carla_scenario is fetched via git in the trafficsim container
-# (see docker/trafficsim.Dockerfile). It pulls in carla==0.9.16 through its
-# own `carla-0-9-16` extras and the lanelet2 binding.
-carla = [
-  "autoware_carla_scenario[carla-0-9-16]",
-]
+# NOTE: torch-cluster, torch-scatter, torch-sparse (PyG compiled extensions)
+# are required at runtime but need matching CUDA at build time.
+# Install them in Docker via pre-built wheels from data.pyg.org.
+
+[dependency-groups]
 dev = [
-  "pytest",
-  "pytest-asyncio",
+  "pytest>=7.0.0",
+  "ruff>=0.5.0",
 ]
 
 [project.scripts]
-trafficsim_server = "alpasim_trafficsim.server:main"
+catk_trafficsim_server = "alpasim_trafficsim.grpc.catk_trafficsim:main"
 
 [tool.uv.sources]
-alpasim_grpc = { path = "../grpc", editable = true }
-autoware_carla_scenario = { git = "https://github.com/tier4/autoware_lanelet2_to_opendrive.git", subdirectory = "autoware_carla_scenario", rev = "6875ab0aa4eab8812f4c9b0fa7d34398dbb620f5" }
+alpasim_grpc = {workspace = true}
+alpasim-runtime = {workspace = true}
+alpasim-utils = {workspace = true}
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["alpasim_trafficsim*"]
+[tool.setuptools]
+packages = {find = {where = ["."], include = ["alpasim_trafficsim*"]}}
+
+[tool.setuptools.package-data]
+alpasim_trafficsim = ["config/*.yaml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+  "integration: requires external assets (USDZ data, model weights, CUDA, or PyG extensions)",
+]

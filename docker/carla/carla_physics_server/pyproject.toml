@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "carla-physics-server"
+version = "0.1.0"
+description = "CARLA-backed gRPC entry point for the Alpasim physics service. Not part of the alpasim src/ workspace."
+requires-python = ">=3.11,<3.13"
+# CARLA is installed inside the Docker image via the tarball drop-in at
+# /opt/carla, not from a Python package on PyPI. The `carla` module is
+# imported lazily in server.py, so this pyproject just declares the pure-
+# Python deps that live on top of it.
+dependencies = [
+  "alpasim_grpc",
+  "alpasim_utils",
+  "alpasim-physics",
+  "grpcio",
+  "numpy",
+  "scipy",
+]
+
+[project.scripts]
+carla_physics_server = "carla_physics_server.server:main"
+
+# Flat layout: pyproject.toml sits inside the package directory alongside the
+# .py files (no nested carla_physics_server/ subdir). Map the package name
+# to "." so setuptools ships the modules at this level instead of running
+# packages.find, which would look for a subdirectory that doesn't exist.
+[tool.setuptools]
+packages = ["carla_physics_server"]
+
+[tool.setuptools.package-dir]
+"carla_physics_server" = "."

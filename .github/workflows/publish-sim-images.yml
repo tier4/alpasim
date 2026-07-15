@@ -6,19 +6,23 @@ on:
     tags:
       - "v*"
     paths:
-      - "physics.Dockerfile"
-      - "trafficsim.Dockerfile"
+      - "Dockerfile"
+      - "docker/carla/**"
       - "src/physics/**"
       - "src/trafficsim/**"
       - "src/grpc/**"
+      - "src/utils/**"
+      - "src/runtime/**"
       - ".github/workflows/publish-sim-images.yml"
   pull_request:
     paths:
-      - "physics.Dockerfile"
-      - "trafficsim.Dockerfile"
+      - "Dockerfile"
+      - "docker/carla/**"
       - "src/physics/**"
       - "src/trafficsim/**"
       - "src/grpc/**"
+      - "src/utils/**"
+      - "src/runtime/**"
       - ".github/workflows/publish-sim-images.yml"
   workflow_dispatch:
 
@@ -38,12 +42,16 @@ jobs:
       matrix:
         include:
           - image: physics-carla
-            dockerfile: physics.Dockerfile
+            dockerfile: docker/carla/physics.Dockerfile
             suffix: physics-carla
             free_disk: true
           - image: trafficsim
-            dockerfile: trafficsim.Dockerfile
+            dockerfile: Dockerfile
             suffix: trafficsim
+            free_disk: true
+          - image: trafficsim-carla
+            dockerfile: docker/carla/trafficsim.Dockerfile
+            suffix: trafficsim-carla
             free_disk: false
     env:
       REGISTRY: ghcr.io
@@ -72,6 +80,23 @@ jobs:
       - name: Prune pre-installed Docker images
         if: matrix.free_disk
         run: docker system prune --all --force
+
+      # `/` on ubuntu-22.04 runners has ~14 GB free even after the cleanup
+      # above, which isn't enough headroom for the CARLA extraction (~15 GB
+      # unpacked) + CUDA image + torch build-isolation env combined. `/mnt`
+      # has ~70 GB free — move Docker's data-root there before Buildx starts
+      # so build layers, cache, and intermediate images all land on the
+      # larger volume.
+      - name: Relocate Docker data-root to /mnt
+        if: matrix.free_disk
+        run: |
+          sudo systemctl stop docker docker.socket
+          sudo mkdir -p /mnt/docker
+          sudo rsync -aq /var/lib/docker/ /mnt/docker/
+          sudo rm -rf /var/lib/docker
+          sudo ln -s /mnt/docker /var/lib/docker
+          sudo systemctl start docker
+          df -h /var/lib/docker /mnt
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

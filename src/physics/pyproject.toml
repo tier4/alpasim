@@ -25,9 +25,6 @@ dependencies = [
   vis = [ "polyscope" ]
   local = [ "gradio" ]
 
-  [project.scripts]
-  physics_server = "alpasim_physics.server:main"
-
 [tool.uv.sources]
 alpasim_grpc = {workspace = true}
 alpasim_utils = {workspace = true}

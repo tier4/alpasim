@@ -108,7 +108,9 @@ class TrafficSimServicer(traffic_pb2_grpc.TrafficServiceServicer):
         for update in request.object_trajectory_updates:
             session.apply_pose_update(update)
 
-        session.tick_until(request.time_query_us)
+        # Physics container ticks CARLA; we just record the target so
+        # snapshot() can stamp poses at the caller's clock.
+        session.note_time_query(request.time_query_us)
         return session.snapshot()
 
     def close_session(self, request: traffic_pb2.TrafficSessionCloseRequest, context):

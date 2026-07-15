@@ -156,7 +156,7 @@ def fake_carla(monkeypatch):
 @pytest.fixture
 def servicer(fake_carla):
     # Import after carla is faked so the module-level `import carla` succeeds.
-    from alpasim_trafficsim.server import TrafficSimServicer
+    from carla_trafficsim_server.server import TrafficSimServicer
 
     s = TrafficSimServicer(
         carla_host="physics-0",
@@ -247,7 +247,7 @@ def _close_request(uuid: str):
 
 def test_scenario_runner_loads_python_module_and_sibling_yaml(tmp_path):
     """A `.py` scenario is dynamically imported and a sibling `.yaml` becomes params."""
-    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+    from carla_trafficsim_server.scenario_runner import ScenarioRunner
 
     scenario_py = tmp_path / "demo.py"
     scenario_py.write_text(
@@ -282,7 +282,7 @@ def test_scenario_runner_loads_python_module_and_sibling_yaml(tmp_path):
 
 def test_scenario_runner_rejects_python_without_apply(tmp_path):
     """A `.py` file without an `apply` callable fails at load time, not at run time."""
-    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+    from carla_trafficsim_server.scenario_runner import ScenarioRunner
 
     bad = tmp_path / "broken.py"
     bad.write_text("MAP_ID = 'Town01'\n")  # no apply()
@@ -293,7 +293,7 @@ def test_scenario_runner_rejects_python_without_apply(tmp_path):
 
 def test_scenario_runner_python_without_sibling_yaml_passes_empty_params(tmp_path):
     """If no sibling yaml exists, params is an empty dict."""
-    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+    from carla_trafficsim_server.scenario_runner import ScenarioRunner
 
     scenario_py = tmp_path / "demo.py"
     scenario_py.write_text(
@@ -315,7 +315,7 @@ def test_scenario_runner_python_without_sibling_yaml_passes_empty_params(tmp_pat
 
 
 def test_scenario_runner_rejects_unknown_extension(tmp_path):
-    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+    from carla_trafficsim_server.scenario_runner import ScenarioRunner
 
     bad = tmp_path / "scenario.txt"
     bad.write_text("anything")
@@ -326,7 +326,7 @@ def test_scenario_runner_rejects_unknown_extension(tmp_path):
 
 def test_scenario_runner_loads_plain_yaml(tmp_path):
     """A `.yaml` scenario without a Python file uses the declarative spawner."""
-    from alpasim_trafficsim.scenario_runner import ScenarioRunner
+    from carla_trafficsim_server.scenario_runner import ScenarioRunner
 
     yaml_path = tmp_path / "demo.yaml"
     yaml_path.write_text(
@@ -347,7 +347,7 @@ def test_scenario_runner_loads_plain_yaml(tmp_path):
 def test_resolve_grpc_driven_back_compat_unset():
     """CONTROL_MODE_UNSPECIFIED falls back to 'EGO is gRPC, rest is TM'."""
     from alpasim_grpc.v0 import traffic_pb2
-    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+    from carla_trafficsim_server.scenario_runner import resolve_grpc_driven
 
     ego = traffic_pb2.ObjectTrajectory(object_id="EGO")
     npc = traffic_pb2.ObjectTrajectory(object_id="npc-0")
@@ -359,7 +359,7 @@ def test_resolve_grpc_driven_back_compat_unset():
 def test_resolve_grpc_driven_explicit_mode_wins():
     """Explicit control_mode overrides the EGO-vs-rest heuristic."""
     from alpasim_grpc.v0 import traffic_pb2
-    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+    from carla_trafficsim_server.scenario_runner import resolve_grpc_driven
 
     # An NPC explicitly marked as GRPC_REPLAY (e.g. log-replay) -> True.
     npc_replay = traffic_pb2.ObjectTrajectory(
@@ -379,7 +379,7 @@ def test_resolve_grpc_driven_explicit_mode_wins():
 def test_apply_pose_update_targets_only_grpc_driven_actors(fake_carla):
     """simulate()'s per-actor dispatch: gRPC actors get set_transform, TM ones don't."""
     from alpasim_grpc.v0 import common_pb2, traffic_pb2
-    from alpasim_trafficsim.carla_session import CarlaSession
+    from carla_trafficsim_server.carla_session import CarlaSession
 
     session = CarlaSession(
         session_uuid="s",
@@ -421,7 +421,7 @@ def test_apply_pose_update_targets_only_grpc_driven_actors(fake_carla):
 def test_resolve_grpc_driven_static_actor_is_never_grpc_driven():
     """is_static=True objects ignore control_mode and are never gRPC-driven."""
     from alpasim_grpc.v0 import traffic_pb2
-    from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+    from carla_trafficsim_server.scenario_runner import resolve_grpc_driven
 
     static_replay = traffic_pb2.ObjectTrajectory(
         object_id="cone-0",
@@ -436,7 +436,7 @@ def test_resolve_grpc_driven_static_actor_is_never_grpc_driven():
 
 def test_register_actor_disables_physics_for_grpc_driven(fake_carla):
     """register_actor centralizes set_simulate_physics(False) for gRPC actors."""
-    from alpasim_trafficsim.carla_session import CarlaSession
+    from carla_trafficsim_server.carla_session import CarlaSession
 
     session = CarlaSession(
         session_uuid="s",
@@ -461,7 +461,7 @@ def test_register_actor_disables_physics_for_grpc_driven(fake_carla):
 
 def test_register_actor_back_compat_defaults_grpc_driven_from_is_ego(fake_carla):
     """Pre-ControlMode scenarios pass is_ego only; EGO must still receive updates."""
-    from alpasim_trafficsim.carla_session import CarlaSession
+    from carla_trafficsim_server.carla_session import CarlaSession
 
     session = CarlaSession(
         session_uuid="s",
@@ -477,3 +477,32 @@ def test_register_actor_back_compat_defaults_grpc_driven_from_is_ego(fake_carla)
 
     assert session._actors_by_id["EGO"].is_grpc_driven is True
     assert session._actors_by_id["npc"].is_grpc_driven is False
+
+
+# =============================================================================
+# note_time_query: snapshot timestamp bookkeeping
+# =============================================================================
+
+
+def _make_session():
+    from carla_trafficsim_server.carla_session import CarlaSession
+
+    session = CarlaSession(
+        session_uuid="s",
+        map_id="Town01",
+        carla_host="h",
+        carla_port=1,
+        tm_port=2,
+    )
+    session.world = mock.MagicMock()
+    return session
+
+
+def test_note_time_query_records_target_without_ticking():
+    """trafficsim no longer owns the world clock — physics does the ticking."""
+    session = _make_session()
+
+    session.note_time_query(1_729_860_123_456_789)
+
+    session.world.tick.assert_not_called()
+    assert session.last_time_query_us == 1_729_860_123_456_789

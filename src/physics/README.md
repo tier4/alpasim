@@ -10,5 +10,7 @@ not handle collisions or vehicle dynamics.
 
 ## Running the Sim Service
 
-Run `uv run physics_server <args>` to start a server for the micro-service. Use `--help` to see
-available options.
+This package now provides the CARLA-free library modules (`backend`, `ply_io`, `utils`) that the
+physics server consumes. The server entry point itself has moved to
+`docker/carla/carla_physics_server` and is built into the `docker/carla/physics.Dockerfile` image
+(select it in wizard with `physics=carla`).

@@ -5,8 +5,12 @@
 # autoware which only ships a CPython 3.10 ABI wheel), while the rest of the
 # workspace targets Python 3.11+.
 #
+# The server code (carla_trafficsim_server) lives in docker/carla/ rather
+# than in src/ because it imports the CARLA Python API — src/ must stay
+# CARLA-free.
+#
 # Build (from repo root):
-#   docker build -f trafficsim.Dockerfile -t alpasim-trafficsim .
+#   docker build -f docker/carla/trafficsim.Dockerfile -t alpasim-trafficsim .
 
 FROM ubuntu:22.04
 
@@ -51,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY src/grpc /repo/src/grpc
-COPY src/trafficsim /repo/src/trafficsim
+COPY docker/carla/carla_trafficsim_server /repo/docker/carla/carla_trafficsim_server
 
 # Compile protos against the grpc package first so the trafficsim install can
 # resolve `alpasim_grpc` as a path source.
@@ -60,11 +64,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync
 RUN uv run compile-protos --no-sync
 
-WORKDIR /repo/src/trafficsim
+WORKDIR /repo/docker/carla/carla_trafficsim_server
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --extra carla --extra dev
 
-ENV PATH="/repo/src/trafficsim/.venv/bin:${PATH}"
+ENV PATH="/repo/docker/carla/carla_trafficsim_server/.venv/bin:${PATH}"
 ENV UV_NO_SYNC=1
 
-ENTRYPOINT ["uv", "run", "trafficsim_server"]
+ENTRYPOINT ["uv", "run", "carla_trafficsim_server"]

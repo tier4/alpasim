@@ -1,21 +1,21 @@
 # syntax=docker/dockerfile:1.7
 # Physics container image with CARLA 0.9.16 Server bundled.
 #
-# Built as a slim, multi-stage image matching grpc.Dockerfile /
-# docker/physics/simple.Dockerfile:
+# Built as a slim, multi-stage image matching grpc.Dockerfile:
 #   - alpasim-base dependency dropped; runtime is the CUDA cuDNN runtime image
 #     so warp-lang's GPU kernels run.
 #   - CARLA 0.9.16 Server (Unreal binary) at /opt/carla, AMD64 only.
 #   - Vulkan / SDL2 / libomp / X11 system libs CARLA needs at runtime.
 #
-# The entrypoint (src/physics/alpasim_physics/entrypoint.sh) launches
-# CarlaUE4.sh in parallel with physics_server.
+# The entrypoint (docker/carla/entrypoint_physics.sh) launches CarlaUE4.sh in
+# parallel with carla_physics_server (which lives here in docker/carla/ rather
+# than in src/ — the alpasim service side must run without CARLA installed).
 #
 # Build (from repo root):
-#   docker build -f physics.Dockerfile -t alpasim-physics-carla .
+#   docker build -f docker/carla/physics.Dockerfile -t alpasim-physics-carla .
 #
 # Override the CUDA runtime base or Python version if needed:
-#   docker build -f physics.Dockerfile \
+#   docker build -f docker/carla/physics.Dockerfile \
 #     --build-arg CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 \
 #     -t alpasim-physics-carla .
 #
@@ -72,6 +72,7 @@ RUN --mount=type=cache,target=/carla-cache,id=carla-${CARLA_VERSION}-${TARGETARC
     fi
 
 # ---- builder: produce wheels for alpasim_grpc + alpasim_utils + alpasim_physics
+#                + carla_physics_server
 FROM ubuntu:22.04 AS builder
 ARG PYTHON_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -89,16 +90,19 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # compiled into *_pb2.py / *_pb2_grpc.py and packed into the wheel. The other
 # packages use setuptools and have no generated sources. Each package is built
 # from its own source dir; `tool.uv.sources` workspace pins only matter at
-# install/sync time.
+# install/sync time. carla_physics_server lives in docker/carla/ because it
+# imports the CARLA Python API — src/ must stay CARLA-free.
 WORKDIR /build
 COPY src/grpc /build/grpc
 COPY src/utils /build/utils
 COPY src/physics /build/physics
+COPY docker/carla/carla_physics_server /build/carla_physics_server
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv build --wheel --out-dir /wheels /build/grpc \
  && uv build --wheel --out-dir /wheels /build/utils \
- && uv build --wheel --out-dir /wheels /build/physics
+ && uv build --wheel --out-dir /wheels /build/physics \
+ && uv build --wheel --out-dir /wheels /build/carla_physics_server
 
 # ---- runtime: CUDA-enabled physics + CARLA ---------------------------------
 FROM ${CUDA_RUNTIME_IMAGE} AS runtime
@@ -139,18 +143,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         /wheels/alpasim_grpc-*.whl \
         /wheels/alpasim_utils-*.whl \
         /wheels/alpasim_physics-*.whl \
+        /wheels/carla_physics_server-*.whl \
     && rm -rf /wheels
 
 COPY --from=carla-fetch /opt/carla /opt/carla
 ENV CARLA_ROOT=/opt/carla
 
-# Bake the CARLA + physics_server launcher. Copied directly from src/physics so
-# updates to the script rebuild only this layer.
-COPY src/physics/alpasim_physics/entrypoint.sh /opt/entrypoint.sh
+# Bake the CARLA + carla_physics_server launcher. Copied directly from
+# docker/carla so updates to the script rebuild only this layer.
+COPY docker/carla/entrypoint_physics.sh /opt/entrypoint.sh
 RUN chmod +x /opt/entrypoint.sh
 
 RUN /opt/alpasim-physics/bin/python -c \
-    "import alpasim_physics, alpasim_grpc, alpasim_utils, numpy, warp"
+    "import alpasim_physics, alpasim_grpc, alpasim_utils, carla_physics_server, numpy, warp"
 
 WORKDIR /work
 ENTRYPOINT ["/opt/entrypoint.sh"]

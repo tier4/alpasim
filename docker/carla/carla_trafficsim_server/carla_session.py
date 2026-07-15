@@ -53,17 +53,22 @@ class CarlaSession:
     carla_host: str
     carla_port: int
     tm_port: int
-    fixed_delta_seconds: float = 0.05
 
     client: Any = None
     world: Any = None
     traffic_manager: Any = None
     actors: list[SpawnedActor] = field(default_factory=list)
-    last_time_query_us: int = 0
+    last_time_query_us: int | None = None
     _actors_by_id: dict[str, SpawnedActor] = field(default_factory=dict)
 
     def open(self, carla_module) -> None:
-        """Connect to CARLA, load the map and switch to synchronous mode."""
+        """Connect to CARLA for spawning + pose read/write.
+
+        The physics container owns CARLA's synchronous-mode and
+        ``fixed_delta_seconds`` settings (and calls ``world.tick()`` each
+        control step). This client attaches to the already-configured world
+        and never ticks it.
+        """
         logger.info(
             "session %s: connecting to CARLA at %s:%d (tm=%d)",
             self.session_uuid,
@@ -78,11 +83,6 @@ class CarlaSession:
         # take the world that's already loaded.
         self.world = self.client.get_world()
         self.traffic_manager = self.client.get_trafficmanager(self.tm_port)
-        self.traffic_manager.set_synchronous_mode(True)
-        settings = self.world.get_settings()
-        settings.synchronous_mode = True
-        settings.fixed_delta_seconds = self.fixed_delta_seconds
-        self.world.apply_settings(settings)
 
     def register_actor(
         self,
@@ -126,23 +126,14 @@ class CarlaSession:
         target_pose = update.trajectory.poses[-1].pose
         entry.actor.set_transform(grpc_pose_to_carla_transform(target_pose))
 
-    def tick_until(self, target_time_us: int) -> None:
-        """Advance the CARLA world to (or past) `target_time_us`.
+    def note_time_query(self, target_time_us: int) -> None:
+        """Record the caller's target time so snapshot() can stamp poses.
 
-        Always advances by at least one tick so the snapshot reflects a fresh
-        world state even when the requested delta is shorter than fixed_delta
-        (this avoids returning stale poses when Runtime polls faster than the
-        configured step).
+        Trafficsim no longer advances CARLA — the physics container ticks the
+        world. We still track ``target_time_us`` so the snapshot's per-pose
+        ``timestamp_us`` matches the caller's clock rather than CARLA's
+        internal one.
         """
-        step_us = int(self.fixed_delta_seconds * 1e6)
-        delta_us = max(target_time_us - self.last_time_query_us, 0)
-        if step_us > 0:
-            # ceil(delta_us / step_us), with a minimum of 1 so we always tick.
-            steps = max(1, -(-delta_us // step_us))
-        else:
-            steps = 1
-        for _ in range(steps):
-            self.world.tick()
         self.last_time_query_us = target_time_us
 
     def snapshot(self) -> traffic_pb2.TrafficReturn:
@@ -159,7 +150,7 @@ class CarlaSession:
                         poses=[
                             common_pb2.PoseAtTime(
                                 pose=pose_msg,
-                                timestamp_us=self.last_time_query_us,
+                                timestamp_us=self.last_time_query_us or 0,
                             )
                         ]
                     ),
@@ -184,14 +175,8 @@ class CarlaSession:
                 logger.exception("failed to destroy actor %s", entry.object_id)
         self.actors.clear()
         self._actors_by_id.clear()
-        if self.world is not None:
-            try:
-                settings = self.world.get_settings()
-                settings.synchronous_mode = False
-                settings.fixed_delta_seconds = None
-                self.world.apply_settings(settings)
-            except Exception:  # noqa: BLE001
-                logger.exception("failed to restore async world settings")
+        # Synchronous-mode / fixed_delta_seconds are owned by the physics
+        # container; it restores async mode on its own close_session.
         if self.traffic_manager is not None:
             try:
                 self.traffic_manager.set_synchronous_mode(False)

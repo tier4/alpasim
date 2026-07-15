@@ -170,7 +170,6 @@ class ScenarioRunner:
         For Python scenarios we delegate to the user-supplied `apply()`. For
         YAML scenarios we run the built-in declarative spawner.
         """
-        session.fixed_delta_seconds = self.fixed_delta_seconds
         self._load_world(session, carla_module)
 
         if self._module is not None:

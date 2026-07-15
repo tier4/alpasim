@@ -7,7 +7,7 @@ This file is mounted into the trafficsim container at /mnt/scenarios/ and
 loaded dynamically by ScenarioRunner. Sibling town01_demo.yaml supplies
 tunable parameters that the runner forwards via the `params` argument.
 
-See src/trafficsim/alpasim_trafficsim/scenario_runner.py for the contract:
+See docker/carla/carla_trafficsim_server/scenario_runner.py for the contract:
 - `apply(session, request, carla_module, params)` — required
 - `MAP_ID`, `FIXED_DELTA_SECONDS`, `SUPPORTED_MAP_IDS` — optional metadata
 """
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from alpasim_trafficsim.scenario_runner import resolve_grpc_driven
+from carla_trafficsim_server.scenario_runner import resolve_grpc_driven
 
 MAP_ID = "Town01"
 FIXED_DELTA_SECONDS = 0.05
