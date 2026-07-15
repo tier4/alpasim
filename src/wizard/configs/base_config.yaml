@@ -40,6 +40,14 @@ defines:
   # E2E planner .ckpt on the host; mounted read-only at
   # /opt/oneplanner/ckpts/e2e_planner.pth inside the container.
   oneplanner_ckpt: "${oc.env:HOME}/Downloads/oneplanner_phase2_gridbev_last.ckpt"
+  # BEVFusion perception config + checkpoint (see driver/oneplanner.yaml).
+  # driver_server.py's ``_build_perception`` reads the YAML (mmcv BEVFusion
+  # topology) and the .pth (mmcv-format state_dict) to build the LiDAR
+  # perception front-end that feeds ``_bev_feature_map`` into the planner.
+  # Required for checkpoints trained with ``use_grid_sample_bev=True``
+  # (e.g. ``oneplanner_phase2_gridbev_*``); optional otherwise.
+  oneplanner_bevfusion_config: "${oc.env:HOME}/workspace/OnePlanner/configs/perception/model/lidar_30e_j6gen2_120m.yaml"
+  oneplanner_bevfusion_ckpt: "${oc.env:HOME}/workspace/OnePlanner/ckpts/bevfusion_extracted.pth"
 
   renderer_entrypoint: "/app/internal/scripts/pycena/runtime/pycena_nrm_full"
   nre_max_workers: 4

@@ -48,6 +48,12 @@ services:
       # requires --scene-usdz to build its HD-map tensors from the embedded
       # lanelet2 asset.
       - "${defines.splatsim_scene_usdz}:/mnt/oneplanner/scene.usdz"
+      # BEVFusion perception config + checkpoint. The image copies scripts/
+      # (train_bevfusion.py owns build_bevfusion_from_config) but not configs/,
+      # so both files are supplied via bind-mounts. Skip these mounts and the
+      # matching --bevfusion-* flags for planner-only smoke tests.
+      - "${defines.oneplanner_bevfusion_config}:/opt/oneplanner/configs/perception/model.yaml"
+      - "${defines.oneplanner_bevfusion_ckpt}:/opt/oneplanner/ckpts/bevfusion.pth"
       - "${wizard.log_dir}:/mnt/output"
       # HOTFIX: cast has_speed_limit to bool before torch.where (upstream bug in
       # OnePlanner where map_tensors stores has_speed_limit as float32 but the
@@ -58,6 +64,8 @@ services:
     command:
       - "python -m oneplanner.deployment.driver_server"
       - "--planner-ckpt=/opt/oneplanner/ckpts/e2e_planner.pth"
+      - "--bevfusion-config=/opt/oneplanner/configs/perception/model.yaml"
+      - "--bevfusion-ckpt=/opt/oneplanner/ckpts/bevfusion.pth"
       - "--scene-usdz=/mnt/oneplanner/scene.usdz"
       - "--host=0.0.0.0"
       - "--port={port}"
