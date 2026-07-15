@@ -303,8 +303,13 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
             logger.info(
                 "RENDER_DBG start_us=%s end_us=%s traj_range=[%s..%s) "
                 "raw_ego_t=%s rig_to_cam_t=%s composed_t=%s",
-                start_us, end_us, _ts_range.start, _ts_range.stop,
-                list(_raw_start.vec3), _rig_to_cam_t, list(_composed.vec3),
+                start_us,
+                end_us,
+                _ts_range.start,
+                _ts_range.stop,
+                list(_raw_start.vec3),
+                _rig_to_cam_t,
+                list(_composed.vec3),
             )
         except Exception as _e:
             logger.info("RENDER_DBG failed to log trajectory: %s", _e)
@@ -355,8 +360,11 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
         def trajectory_to_pose_pair(
             trajectory: Trajectory, delta: Pose | None
         ) -> PosePair:
-            start_pose = trajectory.interpolate_pose(start_us)
-            end_pose = trajectory.interpolate_pose(end_us)
+            traj_range = trajectory.time_range_us
+            clamped_start = max(traj_range.start, min(start_us, traj_range.stop - 1))
+            clamped_end = max(traj_range.start, min(end_us, traj_range.stop - 1))
+            start_pose = trajectory.interpolate_pose(clamped_start)
+            end_pose = trajectory.interpolate_pose(clamped_end)
             if delta is not None:
                 start_pose = start_pose @ delta
                 end_pose = end_pose @ delta

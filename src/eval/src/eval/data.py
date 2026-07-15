@@ -1483,17 +1483,13 @@ class Lidar:
     def add_point_cloud(
         self, point_cloud: RolloutLidarPointCloud.LidarPointCloud
     ) -> None:
-        num_points = int(point_cloud.num_points)
-        if num_points == 0:
-            xyz = np.empty((0, 3), dtype=np.float32)
-        else:
+        if point_cloud.point_xyzs_buffer:
             xyz = np.frombuffer(
                 point_cloud.point_xyzs_buffer, dtype=np.float32
             ).reshape(-1, 3)
-            if xyz.shape[0] != num_points:
-                # Trust the buffer length; num_points is best-effort metadata.
-                xyz = xyz[:num_points] if xyz.shape[0] > num_points else xyz
-        self.timestamps_us.append(int(point_cloud.frame_end_us))
+        else:
+            xyz = np.empty((0, 3), dtype=np.float32)
+        self.timestamps_us.append(point_cloud.frame_end_us)
         self.points_list.append(xyz)
 
     def points_at_time(
