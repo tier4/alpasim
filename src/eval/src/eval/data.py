@@ -14,7 +14,12 @@ import numpy as np
 import polars as pl
 import shapely
 from alpasim_grpc.v0 import common_pb2
-from alpasim_grpc.v0.egodriver_pb2 import DriveResponse, RolloutCameraImage, Route
+from alpasim_grpc.v0.egodriver_pb2 import (
+    DriveResponse,
+    RolloutCameraImage,
+    RolloutLidarPointCloud,
+    Route,
+)
 from alpasim_grpc.v0.logging_pb2 import RolloutMetadata
 from alpasim_grpc.v0.sensorsim_pb2 import AvailableCamerasReturn, CameraSpec
 from alpasim_utils import geometry
@@ -1464,6 +1469,65 @@ class Cameras:
 
 
 @dataclasses.dataclass
+class Lidar:
+    """A single LiDAR sensor's captured sweeps over time.
+
+    Points are stored in the sensor's rig frame (identity sensor-to-base) at the
+    end-of-spin timestamp reported by the renderer.
+    """
+
+    logical_id: str
+    timestamps_us: list[int] = dataclasses.field(default_factory=list)
+    points_list: list[np.ndarray] = dataclasses.field(default_factory=list)
+
+    def add_point_cloud(
+        self, point_cloud: RolloutLidarPointCloud.LidarPointCloud
+    ) -> None:
+        num_points = int(point_cloud.num_points)
+        if num_points == 0:
+            xyz = np.empty((0, 3), dtype=np.float32)
+        else:
+            xyz = np.frombuffer(
+                point_cloud.point_xyzs_buffer, dtype=np.float32
+            ).reshape(-1, 3)
+            if xyz.shape[0] != num_points:
+                # Trust the buffer length; num_points is best-effort metadata.
+                xyz = xyz[:num_points] if xyz.shape[0] > num_points else xyz
+        self.timestamps_us.append(int(point_cloud.frame_end_us))
+        self.points_list.append(xyz)
+
+    def points_at_time(
+        self, time_us: int, max_stale_us: int = 200_000
+    ) -> np.ndarray | None:
+        """Return points from the sweep nearest to `time_us`.
+
+        Returns None when no sweep is within `max_stale_us` of the requested time.
+        """
+        if not self.timestamps_us:
+            return None
+        timestamps = np.asarray(self.timestamps_us, dtype=np.int64)
+        idx = int(np.argmin(np.abs(timestamps - int(time_us))))
+        if abs(int(timestamps[idx]) - int(time_us)) > max_stale_us:
+            return None
+        return self.points_list[idx]
+
+
+@dataclasses.dataclass
+class Lidars:
+    """LiDAR sweeps keyed by logical_id."""
+
+    lidar_by_logical_id: dict[str, Lidar] = dataclasses.field(default_factory=dict)
+
+    def add_lidar_point_cloud(
+        self, point_cloud: RolloutLidarPointCloud.LidarPointCloud
+    ) -> None:
+        logical_id = point_cloud.logical_id
+        if logical_id not in self.lidar_by_logical_id:
+            self.lidar_by_logical_id[logical_id] = Lidar(logical_id=logical_id)
+        self.lidar_by_logical_id[logical_id].add_point_cloud(point_cloud)
+
+
+@dataclasses.dataclass
 class Routes:
     """Captures routes for all timesteps.
 
@@ -1764,6 +1828,9 @@ class ScenarioEvalInput:
     # Cameras data (optional, needed for image-based metrics)
     cameras: Cameras | None = None
 
+    # LiDAR sweeps captured per sensor (optional, used for video overlays)
+    lidars: Lidars | None = None
+
     # Routes data (optional)
     routes: Routes | None = None
 
@@ -1804,6 +1871,7 @@ class SimulationResult:
     # Shapely polygons and pre-cached STRtrees at each ts for fast spatial queries
     actor_polygons: ActorPolygons
     cameras: Cameras
+    lidars: Lidars
     routes: Routes
     # See ScenarioEvalInput.force_gt_duration_us.
     force_gt_duration_us: int | None = None
@@ -1907,9 +1975,12 @@ class SimulationResult:
         # Create actor polygons from trajectories
         actor_polygons = ActorPolygons.from_actor_trajectories(actor_trajectories)
 
-        # Create empty cameras and routes if not provided
+        # Create empty cameras, lidars, and routes if not provided
         cameras = (
             scenario_input.cameras if scenario_input.cameras is not None else Cameras()
+        )
+        lidars = (
+            scenario_input.lidars if scenario_input.lidars is not None else Lidars()
         )
         routes = (
             scenario_input.routes if scenario_input.routes is not None else Routes()
@@ -1925,6 +1996,7 @@ class SimulationResult:
             vec_map=scenario_input.vec_map,
             actor_polygons=actor_polygons,
             cameras=cameras,
+            lidars=lidars,
             routes=routes,
             force_gt_duration_us=scenario_input.force_gt_duration_us,
         )

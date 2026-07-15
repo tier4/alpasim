@@ -33,6 +33,7 @@ from eval.data import (
     RAABB,
     Cameras,
     DriverResponses,
+    Lidars,
     RenderableTrajectory,
     Routes,
     ScenarioEvalInput,
@@ -88,8 +89,9 @@ class EvalDataAccumulator:
         default_factory=list, init=False
     )
 
-    # Camera and route data
+    # Camera, lidar, and route data
     _cameras: Cameras = field(default_factory=Cameras, init=False)
+    _lidars: Lidars = field(default_factory=Lidars, init=False)
     _routes: Routes = field(default_factory=Routes, init=False)
 
     @property
@@ -120,6 +122,10 @@ class EvalDataAccumulator:
             self._handle_actor_poses(message.actor_poses)
         elif msg_type == "driver_camera_image":
             self._cameras.add_camera_image(message.driver_camera_image.camera_image)
+        elif msg_type == "driver_lidar_point_cloud":
+            self._lidars.add_lidar_point_cloud(
+                message.driver_lidar_point_cloud.lidar_point_cloud
+            )
         elif msg_type == "route_request":
             self._routes.add_route(message.route_request.route)
         elif msg_type == "driver_request":
@@ -367,6 +373,7 @@ class EvalDataAccumulator:
             driver_responses=driver_responses,
             vec_map=vec_map,
             cameras=self._cameras if self._cameras.camera_by_logical_id else None,
+            lidars=self._lidars if self._lidars.lidar_by_logical_id else None,
             routes=self._routes if self._routes.routes_in_rig_frame else None,
             run_uuid=run_uuid,
             run_name=run_name,

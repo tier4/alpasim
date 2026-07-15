@@ -20,6 +20,7 @@ from eval.data import (
     Cameras,
     DriverResponseAtTime,
     DriverResponses,
+    Lidars,
     RenderableTrajectory,
     Routes,
     SimulationResult,
@@ -91,6 +92,7 @@ def test_render_single_reasoning_overlay_frame_uses_renderable_trajectory_api() 
         vec_map=None,
         actor_polygons=ActorPolygons.from_actor_trajectories({"EGO": ego_traj}),
         cameras=cameras,
+        lidars=Lidars(),
         routes=Routes(),
     )
     cfg = create_test_eval_config()

@@ -77,6 +77,17 @@ class VideoRendererConfig:
     camera_id_to_render: str = MISSING
     # Whether to overlay planner trajectories onto the camera view
     overlay_plans_on_camera: bool = True
+    # Whether to project LiDAR points onto the camera view, colored by depth.
+    overlay_lidar_on_camera: bool = False
+    # LiDAR logical id to overlay when overlay_lidar_on_camera is enabled.
+    # If None and overlay is enabled, the first available lidar is used.
+    lidar_id_to_overlay: str | None = None
+    # Marker size (in points) for projected LiDAR points on the camera view.
+    lidar_overlay_point_size: float = 0.5
+    # Maximum number of LiDAR points to draw per frame (raw sweeps are ~250k
+    # points, which is prohibitively slow for matplotlib scatter). Points are
+    # uniformly subsampled to this cap.
+    lidar_overlay_max_points: int = 8000
     # Order and inclusion of metrics in the rendered table; None shows all metrics.
     metrics_table_entries: list[str] | None = None
     # Options for how to render the BEV map

@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from eval.aggregation import processing
 from eval.aggregation.processing import ProcessedMetricDFs
-from eval.data import CameraProjector, ScenarioEvalInput, SimulationResult
+from eval.data import CameraProjector, Lidar, ScenarioEvalInput, SimulationResult
 from eval.schema import EvalConfig, MapElements, VideoLayout
 from eval.video_data import ShapelyMap
 from eval.video_reasoning_overlay_utils import render_reasoning_overlay_style_video
@@ -404,6 +404,37 @@ def update_table(
     return table
 
 
+def _render_lidar_overlay(
+    ax: plt.Axes,
+    camera_projector: CameraProjector,
+    lidar: Lidar,
+    time_us: int,
+    point_size: float,
+    max_points: int,
+) -> plt.Artist | None:
+    """Project a LiDAR sweep onto the camera axes, colored by forward depth."""
+    points_rig = lidar.points_at_time(time_us)
+    if points_rig is None or points_rig.size == 0:
+        return None
+    if max_points > 0 and points_rig.shape[0] > max_points:
+        stride = points_rig.shape[0] // max_points
+        points_rig = points_rig[::stride]
+    pixels, mask = camera_projector.project_points(points_rig)
+    if pixels.shape[0] == 0:
+        return None
+    depths = points_rig[mask, 0]
+    return ax.scatter(
+        pixels[:, 0],
+        pixels[:, 1],
+        c=depths,
+        cmap="turbo",
+        s=point_size,
+        vmin=1.0,
+        vmax=60.0,
+        linewidths=0,
+    )
+
+
 def create_video_animation(
     processed_metrics_dfs: ProcessedMetricDFs,
     sim_result: SimulationResult,
@@ -441,35 +472,38 @@ def create_video_animation(
         axs["image"].set_autoscale_on(False)
 
     overlay_enabled = cfg.video.overlay_plans_on_camera
+    lidar_overlay_enabled = cfg.video.overlay_lidar_on_camera
     camera_projector: CameraProjector | None = None
-    if overlay_enabled:
-        if not sim_result.driver_responses.per_timestep_driver_responses:
-            logger.info("No driver responses found; disabling camera overlay.")
-            overlay_enabled = False
-        else:
-            calibration = sim_result.cameras.calibrations_by_logical_id.get(
-                cfg.video.camera_id_to_render
+    if overlay_enabled or lidar_overlay_enabled:
+        calibration = sim_result.cameras.calibrations_by_logical_id.get(
+            cfg.video.camera_id_to_render
+        )
+        if calibration is None:
+            logger.warning(
+                "No calibration for camera %s; disabling camera overlays.",
+                cfg.video.camera_id_to_render,
             )
-            if calibration is None:
+            overlay_enabled = False
+            lidar_overlay_enabled = False
+        else:
+            try:
+                camera_projector = CameraProjector(
+                    calibration=calibration,
+                    actual_resolution=first_image.size if first_image else None,
+                )
+            except ValueError as exc:
                 logger.warning(
-                    "No calibration for camera %s; disabling camera overlay.",
+                    "Unsupported calibration for camera %s (%s); "
+                    "disabling camera overlays.",
                     cfg.video.camera_id_to_render,
+                    exc,
                 )
                 overlay_enabled = False
-            else:
-                try:
-                    camera_projector = CameraProjector(
-                        calibration=calibration,
-                        actual_resolution=first_image.size if first_image else None,
-                    )
-                except ValueError as exc:
-                    logger.warning(
-                        "Unsupported calibration for camera %s (%s); "
-                        "disabling camera overlay.",
-                        cfg.video.camera_id_to_render,
-                        exc,
-                    )
-                    overlay_enabled = False
+                lidar_overlay_enabled = False
+
+    if overlay_enabled and not sim_result.driver_responses.per_timestep_driver_responses:
+        logger.info("No driver responses found; disabling camera overlay.")
+        overlay_enabled = False
 
     if overlay_enabled:
         overlay_frame_matches = np.intersect1d(
@@ -480,6 +514,27 @@ def create_video_animation(
                 "Driver response timestamps do not align with rendered frames; "
                 "camera overlay will be empty."
             )
+
+    lidar_overlay_source = None
+    if lidar_overlay_enabled:
+        lidars_by_id = sim_result.lidars.lidar_by_logical_id
+        if not lidars_by_id:
+            logger.info("No LiDAR sweeps recorded; disabling LiDAR overlay.")
+            lidar_overlay_enabled = False
+        else:
+            requested_id = cfg.video.lidar_id_to_overlay
+            if requested_id is None:
+                lidar_overlay_source = next(iter(lidars_by_id.values()))
+            elif requested_id in lidars_by_id:
+                lidar_overlay_source = lidars_by_id[requested_id]
+            else:
+                logger.warning(
+                    "Configured lidar_id_to_overlay=%s not present in recorded "
+                    "sweeps (available=%s); disabling LiDAR overlay.",
+                    requested_id,
+                    list(lidars_by_id.keys()),
+                )
+                lidar_overlay_enabled = False
 
     if should_render_table:
         table = render_table(
@@ -700,12 +755,29 @@ def create_video_animation(
             command_text_artist.set_visible(False)
 
         overlay_artists: list[plt.Artist] = []
-        if overlay_enabled and camera_projector is not None:
-            overlay_artists = sim_result.driver_responses.render_on_camera(
+        if (
+            lidar_overlay_enabled
+            and camera_projector is not None
+            and lidar_overlay_source is not None
+        ):
+            lidar_artist = _render_lidar_overlay(
                 axs["image"],
                 camera_projector,
+                lidar_overlay_source,
                 time,
-                which_time="now",
+                cfg.video.lidar_overlay_point_size,
+                cfg.video.lidar_overlay_max_points,
+            )
+            if lidar_artist is not None:
+                overlay_artists.append(lidar_artist)
+        if overlay_enabled and camera_projector is not None:
+            overlay_artists.extend(
+                sim_result.driver_responses.render_on_camera(
+                    axs["image"],
+                    camera_projector,
+                    time,
+                    which_time="now",
+                )
             )
             overlay_artists.extend(
                 sim_result.routes.render_on_camera(
