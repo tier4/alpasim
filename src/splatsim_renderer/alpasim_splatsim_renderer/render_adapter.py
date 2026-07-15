@@ -110,35 +110,20 @@ def _quat_to_rotation_matrix(qw: float, qx: float, qy: float, qz: float) -> np.n
     )
 
 
-# Rotation from alpasim's ROS ENU world frame (X-forward/east, Y-left/north,
-# Z-up) into splatsim's tile-local RUB Y-up frame (X, Y-up, Z). Applied to any
-# camera-in-world pose received from alpasim before recentering by
-# ``tile_local_centroid``. Without this, cameras end up pointing down and the
-# rendered image looks like a bird's-eye view.
-_R_ENU_TO_TILE = np.array(
-    [
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [0.0, -1.0, 0.0],
-    ],
-    dtype=np.float32,
-)
-
-
 def _pose_to_tile_local(
     pose,
     world_origin: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (R, t) of a camera-in-world pose expressed in tile-local frame.
 
-    Rotates the incoming pose from alpasim's Z-up ENU world into splatsim's
-    Y-up tile-local world, then subtracts ``world_origin`` (which is already
-    in tile-local coordinates, e.g. ``Background.tile_local_centroid``).
+    Both alpasim's world (ROS ENU) and splatsim's tile-local frame are
+    right-handed Z-up (Cesium 3D Tiles standard, confirmed by the
+    ``up_axis: "z"`` entry in the USDZ scene.json), so the pose orientation
+    is used as-is. Only the translation is recentered by ``world_origin``
+    (typically ``Background.tile_local_centroid``).
     """
     R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
     t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
-    R = _R_ENU_TO_TILE @ R
-    t = _R_ENU_TO_TILE @ t
     if world_origin is not None:
         t = t - np.asarray(world_origin, dtype=np.float32)
     return R, t

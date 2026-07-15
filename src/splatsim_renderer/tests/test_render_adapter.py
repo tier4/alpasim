@@ -76,14 +76,9 @@ def test_pose_identity_yields_translation_only_viewmat():
         quat=common_pb2.Quat(w=1.0, x=0.0, y=0.0, z=0.0),
     )
     viewmat = pose_to_viewmat(pose)
-    # Alpasim sends camera-in-world as ENU Z-up; splatsim's tile-local is
-    # Y-up, so ``pose_to_viewmat`` applies R_ENU_TO_TILE = [[1,0,0],[0,0,1],
-    # [0,-1,0]] before inversion. For identity rotation this yields
-    # viewmat[:3,:3] = R_ENU_TO_TILE.T and viewmat[:3,3] = -R.T @ R @ t = -t.
-    expected_R = np.array(
-        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], dtype=np.float32
-    )
-    np.testing.assert_allclose(viewmat[:3, :3], expected_R, atol=1e-6)
+    # Both alpasim's ENU world and splatsim's tile-local frame are Z-up, so an
+    # identity pose yields an identity R and viewmat[:3,3] = -t.
+    np.testing.assert_allclose(viewmat[:3, :3], np.eye(3, dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(viewmat[:3, 3], np.array([-1.0, -2.0, -3.0]), atol=1e-6)
     np.testing.assert_allclose(viewmat[3], [0, 0, 0, 1], atol=1e-6)
 
@@ -169,29 +164,17 @@ def test_encode_image_undefined_format_defaults_to_png():
 
 
 def test_identity_quat_takes_fast_path():
-    """Identity quaternion should hit the fast path and yield exact R_ENU_TO_TILE^T.
-
-    The frame rotation is a permutation with exact ±1 entries, so combining it
-    with the identity-quat fast path in ``_quat_to_rotation_matrix`` must
-    remain exact (no floating-point drift).
-    """
+    """Identity quaternion should hit the fast path and yield identity R."""
     pose = common_pb2.Pose(
         vec=common_pb2.Vec3(),
         quat=common_pb2.Quat(w=1.0),
     )
     viewmat = pose_to_viewmat(pose)
-    expected_R = np.array(
-        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], dtype=np.float32
-    )
-    np.testing.assert_array_equal(viewmat[:3, :3], expected_R)
+    np.testing.assert_array_equal(viewmat[:3, :3], np.eye(3, dtype=np.float32))
 
 
 def test_world_origin_offset_shifts_camera_position():
-    """``world_origin`` (in tile-local Y-up) zeroes the recentered translation.
-
-    Camera at world ENU (10, 20, 30) rotates to tile-local Y-up (10, 30, -20);
-    passing that as ``world_origin`` recenters to the tile origin.
-    """
+    """``world_origin`` (in tile-local) zeroes the recentered translation."""
     from alpasim_splatsim_renderer.render_adapter import pose_to_viewmat
 
     pose = common_pb2.Pose(
@@ -199,25 +182,9 @@ def test_world_origin_offset_shifts_camera_position():
         quat=common_pb2.Quat(w=1.0),
     )
     viewmat = pose_to_viewmat(
-        pose, world_origin=np.array([10.0, 30.0, -20.0], dtype=np.float32)
+        pose, world_origin=np.array([10.0, 20.0, 30.0], dtype=np.float32)
     )
     np.testing.assert_allclose(viewmat[:3, 3], np.zeros(3), atol=1e-6)
-
-
-def test_zup_to_yup_axis_mapping():
-    """+Z (up) in alpasim ENU must become +Y (up) in splatsim tile-local.
-
-    Regression guard for the frame conversion. Verified at the sensor-to-world
-    level (no inversion) so the assertion reads as a direct position swap.
-    """
-    from alpasim_splatsim_renderer.render_adapter import pose_to_sensor_to_world
-
-    pose = common_pb2.Pose(
-        vec=common_pb2.Vec3(x=0.0, y=0.0, z=5.0),
-        quat=common_pb2.Quat(w=1.0),
-    )
-    s2w = pose_to_sensor_to_world(pose)
-    np.testing.assert_allclose(s2w[:3, 3], np.array([0.0, 5.0, 0.0]), atol=1e-6)
 
 
 def test_pose_to_sensor_to_world_is_inverse_of_viewmat():
