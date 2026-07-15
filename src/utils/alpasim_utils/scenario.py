@@ -122,9 +122,18 @@ class Rig:
         return frame_ranges_us
 
     def first_camera_frame_ranges_us(
-        self, camera_logical_ids: Iterable[str]
+        self,
+        camera_logical_ids: Iterable[str],
+        *,
+        min_frame_end_us: int | None = None,
     ) -> dict[str, range]:
-        """First recorded frame window for each configured logical camera."""
+        """First recorded frame window for each configured logical camera.
+
+        ``min_frame_end_us`` (optional) skips frames whose shutter-close is
+        strictly before the given timestamp, so callers can pivot the rollout
+        anchor to a later point in the recording (see
+        ``SimulationConfig.trajectory_start_us_offset``).
+        """
         first_frame_ranges_us: dict[str, range] = {}
         available_by_logical_id = {
             camera_id.logical_name: camera_id.unique_id for camera_id in self.camera_ids
@@ -145,14 +154,33 @@ class Rig:
                     f"Configured camera {logical_id!r} ({unique_id!r}) in rig "
                     f"{self.sequence_id!r} has no frame timestamps."
                 )
-            first_frame_ranges_us[logical_id] = ranges_us[0]
+            if min_frame_end_us is None:
+                first_frame_ranges_us[logical_id] = ranges_us[0]
+            else:
+                first_after = next(
+                    (r for r in ranges_us if r.stop >= min_frame_end_us),
+                    None,
+                )
+                if first_after is None:
+                    raise ValueError(
+                        f"Configured camera {logical_id!r} ({unique_id!r}) in "
+                        f"rig {self.sequence_id!r} has no frame ending at or "
+                        f"after {min_frame_end_us=} (last frame ends at "
+                        f"{ranges_us[-1].stop})."
+                    )
+                first_frame_ranges_us[logical_id] = first_after
 
         if not first_frame_ranges_us:
             raise ValueError("At least one runtime camera must be configured.")
 
         return first_frame_ranges_us
 
-    def first_camera_frame_end_us(self, camera_logical_ids: Iterable[str]) -> int:
+    def first_camera_frame_end_us(
+        self,
+        camera_logical_ids: Iterable[str],
+        *,
+        min_frame_end_us: int | None = None,
+    ) -> int:
         """Central first-frame shutter-close time for configured cameras.
 
         The earliest first-frame end is the rollout render anchor.  Individual
@@ -161,7 +189,7 @@ class Rig:
         return min(
             frame_range.stop
             for frame_range in self.first_camera_frame_ranges_us(
-                camera_logical_ids
+                camera_logical_ids, min_frame_end_us=min_frame_end_us
             ).values()
         )
 

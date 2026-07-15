@@ -6,6 +6,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from alpasim_grpc.v0.logging_pb2 import RolloutMetadata
 from alpasim_runtime.config import (
     PhysicsUpdateMode,
@@ -239,3 +240,71 @@ def test_create_keeps_synthetic_first_exposure_inside_rollout_window(
     assert rollout.first_camera_frame_ranges_us["camera_left"] == range(50_000, 150_000)
     assert rollout.egomotion_context_start_us == 0
     assert rollout.traffic_objs["actor"].trajectory.time_range_us.start == 0
+
+
+def test_trajectory_start_us_offset_shifts_anchor_to_later_camera_frame(
+    tmp_path,
+) -> None:
+    # Offset 210_000us skips each camera's first frame_range (both end at or
+    # before 200_000us); the render anchor becomes the second per-camera frame.
+    rollout = UnboundRollout.create(
+        simulation_config=_simulation_config(trajectory_start_us_offset=210_000),
+        scene_id="scene",
+        version_ids=RolloutMetadata.VersionIds(),
+        data_source=_artifact(),
+        rollouts_dir=str(tmp_path),
+        renderer_service=_sensorsim_renderer(),
+    )
+
+    assert rollout.egomotion_context_start_us == 210_000
+    assert rollout.first_camera_frame_ranges_us["camera_front"] == range(
+        270_000, 300_000
+    )
+    assert rollout.first_camera_frame_ranges_us["camera_left"] == range(
+        220_000, 250_000
+    )
+    assert rollout.render_start_timestamp_us == 250_000
+
+
+def test_trajectory_start_us_offset_rejects_negative(tmp_path) -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        UnboundRollout.create(
+            simulation_config=_simulation_config(trajectory_start_us_offset=-1),
+            scene_id="scene",
+            version_ids=RolloutMetadata.VersionIds(),
+            data_source=_artifact(),
+            rollouts_dir=str(tmp_path),
+            renderer_service=_sensorsim_renderer(),
+        )
+
+
+def test_trajectory_start_us_offset_rejects_past_recording(tmp_path) -> None:
+    # Trajectory spans [0, 500_001); an offset >= 500_001 lands at or past the
+    # recording's stop, so there is no ego history left to replay.
+    with pytest.raises(ValueError, match="past the recording"):
+        UnboundRollout.create(
+            simulation_config=_simulation_config(
+                trajectory_start_us_offset=500_001
+            ),
+            scene_id="scene",
+            version_ids=RolloutMetadata.VersionIds(),
+            data_source=_artifact(),
+            rollouts_dir=str(tmp_path),
+            renderer_service=_sensorsim_renderer(),
+        )
+
+
+def test_trajectory_start_us_offset_rejects_no_frame_after_start(tmp_path) -> None:
+    # camera_left's last frame ends at 250_000; requesting a shift beyond it
+    # leaves the camera with no usable first frame.
+    with pytest.raises(ValueError, match="no frame ending at or after"):
+        UnboundRollout.create(
+            simulation_config=_simulation_config(
+                trajectory_start_us_offset=260_000
+            ),
+            scene_id="scene",
+            version_ids=RolloutMetadata.VersionIds(),
+            data_source=_artifact(),
+            rollouts_dir=str(tmp_path),
+            renderer_service=_sensorsim_renderer(),
+        )

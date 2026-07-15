@@ -310,6 +310,12 @@ runtime:
     route_generator_type: "MAP" # "MAP" or "RECORDED"
     route_start_offset_m: 0.0 # Along-route distance ahead of ego where submitted routes start
 
+    # Skip the first N microseconds of the recorded trajectory before starting the rollout.
+    # 0 = play from the very first recorded timestamp. Useful when the beginning of the
+    # recording is uninteresting, or to supply enough ego-history context for drivers like
+    # OnePlanner that condition on past motion.
+    trajectory_start_us_offset: 0
+
     vehicle: null # use values from the .usdz file (original dimensions)
 
     # Note: If you change the `frame_interval_us`, it will affect the frequency of

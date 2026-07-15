@@ -334,6 +334,14 @@ class SimulationConfig:
     route_generator_type: RouteGeneratorType = RouteGeneratorType.MAP
     route_start_offset_m: float = 0.0
 
+    # Skip the first N microseconds of the recorded trajectory before starting
+    # the rollout. 0 (default) reproduces the historical behavior of playing
+    # from the very first recorded timestamp. Useful when the beginning of the
+    # recording is uninteresting (parked/idle), or to supply enough
+    # ego-history context for drivers like OnePlanner that condition on past
+    # motion.
+    trajectory_start_us_offset: int = 0
+
     # Whether to send optional messages to the driver
     send_recording_ground_truth: bool = False
 

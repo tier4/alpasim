@@ -72,19 +72,34 @@ def _build_rollout_timing(
     renderer_service: RendererService,
 ) -> RolloutTiming:
     camera_logical_ids = [camera_cfg.logical_id for camera_cfg in camera_configs]
-    egomotion_context_start_us = data_source.rig.trajectory.time_range_us.start
+    trajectory_range_us = data_source.rig.trajectory.time_range_us
+    offset_us = simulation_config.trajectory_start_us_offset
+    if offset_us < 0:
+        raise ValueError(
+            f"trajectory_start_us_offset must be non-negative, got {offset_us}"
+        )
+    if offset_us >= (trajectory_range_us.stop - trajectory_range_us.start):
+        raise ValueError(
+            f"trajectory_start_us_offset={offset_us} is past the recording "
+            f"duration ({trajectory_range_us.stop - trajectory_range_us.start} us)"
+        )
+    egomotion_context_start_us = trajectory_range_us.start + offset_us
 
     # ``first_camera_frame_end_us`` raises through ``first_camera_frame_ranges_us``
-    # when no cameras are configured.  Headless rollouts fall back to the GT
-    # trajectory start as the render anchor.
+    # when no cameras are configured.  Headless rollouts fall back to the
+    # (shifted) GT trajectory start as the render anchor.
     if camera_logical_ids:
         first_camera_frame_ranges_us = data_source.rig.first_camera_frame_ranges_us(
-            camera_logical_ids
+            camera_logical_ids,
+            min_frame_end_us=egomotion_context_start_us,
         )
-        render_start_us = data_source.rig.first_camera_frame_end_us(camera_logical_ids)
+        render_start_us = data_source.rig.first_camera_frame_end_us(
+            camera_logical_ids,
+            min_frame_end_us=egomotion_context_start_us,
+        )
     else:
         first_camera_frame_ranges_us = {}
-        render_start_us = data_source.rig.trajectory.time_range_us.start
+        render_start_us = egomotion_context_start_us
 
     if simulation_config.assert_zero_decision_delay and camera_configs:
         for camera_cfg in camera_configs:
