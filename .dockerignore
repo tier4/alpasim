@@ -11,6 +11,7 @@
 !src/ddb/**
 !src/eval/**
 !src/physics/**
+!src/trafficsim/**
 !src/controller/**
 !src/tools/**
 !src/plugins/**

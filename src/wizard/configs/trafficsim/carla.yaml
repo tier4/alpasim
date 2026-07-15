@@ -19,7 +19,7 @@ trafficsim:
 
 services:
   trafficsim:
-    image: ${defines.trafficsim_image}
+    image: ${defines.carla_trafficsim_image}
     dockerfile: docker/carla/trafficsim.Dockerfile
     volumes:
       - "${trafficsim.scenario_dir}:/mnt/scenarios"

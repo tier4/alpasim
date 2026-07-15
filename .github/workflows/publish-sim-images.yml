@@ -6,15 +6,23 @@ on:
     tags:
       - "v*"
     paths:
+      - "Dockerfile"
       - "docker/carla/**"
       - "src/physics/**"
+      - "src/trafficsim/**"
       - "src/grpc/**"
+      - "src/utils/**"
+      - "src/runtime/**"
       - ".github/workflows/publish-sim-images.yml"
   pull_request:
     paths:
+      - "Dockerfile"
       - "docker/carla/**"
       - "src/physics/**"
+      - "src/trafficsim/**"
       - "src/grpc/**"
+      - "src/utils/**"
+      - "src/runtime/**"
       - ".github/workflows/publish-sim-images.yml"
   workflow_dispatch:
 
@@ -38,8 +46,12 @@ jobs:
             suffix: physics-carla
             free_disk: true
           - image: trafficsim
-            dockerfile: docker/carla/trafficsim.Dockerfile
+            dockerfile: Dockerfile
             suffix: trafficsim
+            free_disk: true
+          - image: trafficsim-carla
+            dockerfile: docker/carla/trafficsim.Dockerfile
+            suffix: trafficsim-carla
             free_disk: false
     env:
       REGISTRY: ghcr.io
