@@ -63,6 +63,9 @@ class TrafficService(ServiceBase[TrafficServiceStub]):
                 "TrafficService._initialize_session requires a TrafficSessionConfig "
                 f"via session_config, got {type(cfg).__name__}."
             )
+        if self.skip:
+            self._traffic_objs = cfg.traffic_objs
+            return
 
         self._traffic_objs = cfg.traffic_objs
         scene_id = cfg.scene_id

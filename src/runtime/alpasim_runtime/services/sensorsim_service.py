@@ -262,8 +262,11 @@ class SensorsimService(ServiceBase[SensorsimServiceStub]):
             Interpolate pose between trigger start and end and package as PosePair.
             Optionally apply a delta transformation (such as rig_to_camera).
             """
-            start_pose = trajectory.interpolate_pose(start_us)
-            end_pose = trajectory.interpolate_pose(end_us)
+            traj_range = trajectory.time_range_us
+            clamped_start = max(traj_range.start, min(start_us, traj_range.stop - 1))
+            clamped_end = max(traj_range.start, min(end_us, traj_range.stop - 1))
+            start_pose = trajectory.interpolate_pose(clamped_start)
+            end_pose = trajectory.interpolate_pose(clamped_end)
 
             if delta is not None:
                 start_pose = start_pose @ delta
