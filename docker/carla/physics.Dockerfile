@@ -157,6 +157,20 @@ RUN chmod +x /opt/entrypoint.sh
 RUN /opt/alpasim-physics/bin/python -c \
     "import alpasim_physics, alpasim_grpc, alpasim_utils, carla_physics_server, numpy, warp"
 
+# Run CARLA as a non-root user. CarlaUE4 writes into $CARLA_ROOT/CarlaUE4/Saved
+# and reads xdg-user-dirs from $HOME, so we grant the user a writable home
+# and ownership of the CARLA install tree.
+ARG CARLA_UID=1000
+ARG CARLA_GID=1000
+RUN groupadd --system --gid ${CARLA_GID} carla \
+ && useradd  --system --uid ${CARLA_UID} --gid ${CARLA_GID} \
+             --home-dir /home/carla --create-home --shell /usr/sbin/nologin carla \
+ && mkdir -p /work \
+ && chown -R carla:carla /opt/carla /work /home/carla
+
+USER carla:carla
+ENV HOME=/home/carla
+
 WORKDIR /work
 ENTRYPOINT ["/opt/entrypoint.sh"]
 CMD []
