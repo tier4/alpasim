@@ -4,9 +4,27 @@
 
 """Compile proto files to Python modules."""
 import os
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Union
+
+if sys.version_info >= (3, 11):
+    from contextlib import chdir
+else:
+    # contextlib.chdir was added in 3.11; provide an equivalent for 3.10 so
+    # the trafficsim / splatsim_renderer containers (pinned to 3.10) can
+    # consume this build hook.
+    from contextlib import contextmanager
+
+    @contextmanager
+    def chdir(path):  # type: ignore[no-redef]
+        old = os.getcwd()
+        os.chdir(path)
+        try:
+            yield
+        finally:
+            os.chdir(old)
 
 from grpc_tools import command
 

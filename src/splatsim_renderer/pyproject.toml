@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alpasim-splatsim-renderer"
+version = "0.1.0"
+description = "Splatsim-backed renderer micro-service for Alpasim (SensorsimService gRPC)"
+# Pinned to Python 3.10 to match tier4/splatsim's wheel constraints
+# (PyTorch 2.4 + gsplat + CUDA 12.4).
+requires-python = ">=3.10,<3.11"
+dependencies = [
+  "alpasim_grpc",
+  "grpcio",
+  "numpy",
+  "Pillow",
+  "pyyaml",
+  "omegaconf",
+]
+
+[project.optional-dependencies]
+# `splatsim` extras pull in the upstream tier4/splatsim package + its CUDA
+# runtime deps. Only the container image needs these; local unit tests run
+# with the lightweight base deps and mock the heavy bits.
+splatsim = [
+  "splatsim",
+  "torch>=2.4,<2.5",
+  # Build-time deps for gsplat, which is compiled with build isolation off
+  # (see [tool.uv].no-build-isolation-package). Must be present in the target
+  # env before gsplat is built.
+  "setuptools",
+  "wheel",
+  "ninja",
+]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+]
+
+[project.scripts]
+splatsim_renderer_server = "alpasim_splatsim_renderer.server:main"
+
+[tool.uv.sources]
+alpasim_grpc = { path = "../grpc", editable = true }
+splatsim = { git = "https://github.com/tier4/splatsim.git", tag = "v0.2.0" }
+
+[tool.uv]
+# Override splatsim v0.2.0's transitive `3dgs-io` dep, which pins the deleted
+# `feat/usdz-io` branch of autowarefoundation/3dgs_io. v0.8.0 ships the
+# ``metadata`` CLI + ``UsdzMetadata`` API (previously carried on that branch,
+# now merged upstream) needed to inject/refresh ``metadata.yaml`` in
+# existing USDZs (autowarefoundation/3dgs_io#29, #30).
+# ``[tool.uv.sources]`` only affects direct deps of this project; transitive
+# git pins need ``override-dependencies``.
+override-dependencies = [
+  "3dgs-io @ git+https://github.com/autowarefoundation/3dgs_io.git@v0.8.0",
+  # Pin torch to match the base image's CUDA 12.4. Newer torch (>=2.7) wheels
+  # are compiled against CUDA 13.0 and fail gsplat's cpp_extension check.
+  "torch>=2.4,<2.5",
+  # Newer Lightning versions pull torch>=2.7; keep it aligned with our torch pin.
+  "pytorch-lightning<2.6",
+]
+# gsplat builds CUDA C++ extensions that link against torch at build time. By
+# default, uv's build isolation env installs the LATEST torch (2.7+, CUDA 13.0)
+# in the isolated env, which mismatches the base image's CUDA 12.4 nvcc.
+# Disabling isolation forces gsplat to use the target env's pinned torch 2.4.1
+# (CUDA 12.4). Requires that torch and gsplat's other build deps are installed
+# in the target env before gsplat builds.
+no-build-isolation-package = ["gsplat"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alpasim_splatsim_renderer*"]

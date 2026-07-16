@@ -1,0 +1,46 @@
+# @package _global_
+#
+# Splatsim-backed renderer. Builds the dedicated `splatsim.Dockerfile` image
+# (CUDA12.4 + Python3.10 + tier4/splatsim v0.2.0) and bind-mounts a host
+# directory containing a `.usdz` splat scene. No upstream asset download is
+# required — the user is expected to populate
+# ${defines.splatsim_scene_usdz} with a 3D Gaussian USDZ (Cesium tileset +
+# EXT_3dgs_spz chunks).
+#
+# Dynamic objects in render requests are ignored; the renderer renders the
+# static USDZ background only. RGB uses the OpenCV pinhole model; LiDAR uses
+# splatsim's LidarRenderer (PANDAR128 supported, AT128 pending upstream).
+#
+# Usage:
+#   uv run alpasim_wizard ... \
+#     renderer=splatsim \
+#     wizard.log_dir=/tmp/run01
+services:
+  renderer:
+    image: ${defines.splatsim_renderer_image}
+    dockerfile: splatsim.Dockerfile
+    external_image: false
+    volumes:
+      - "${defines.splatsim_scene_usdz}:/mnt/splatsim/scene.usdz"
+    # NOTE: Unlike other services which mount ``${repo-relative:'src'}:/repo/src``
+    # for hot-reload against the shared base image's global venv, the splatsim
+    # renderer uses a dedicated image with a per-project venv baked in at
+    # ``/repo/src/splatsim_renderer/.venv``. Mounting the host src dir would
+    # mask that venv and force uv to recreate an empty one at runtime, causing
+    # ``splatsim_renderer_server`` to be missing.
+    environments:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+    command:
+      - "uv run splatsim_renderer_server"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--scene-usdz=/mnt/splatsim/scene.usdz"
+      # Register the scene under the wizard's first scene_id so runtime
+      # scenario validation (which queries `get_available_scenes` and looks
+      # for `scenes.scene_ids[0]`) succeeds. The splatsim renderer only hosts
+      # one USDZ, so we advertise it under whatever the wizard is running.
+      - "--scene-id=${scenes.scene_ids[0]}"
+      - "--width=960"
+      - "--height=540"
+      - "--log-level=${wizard.log_level}"
