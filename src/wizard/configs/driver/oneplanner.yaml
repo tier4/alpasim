@@ -54,11 +54,31 @@ services:
       # matching --bevfusion-* flags for planner-only smoke tests.
       - "${defines.oneplanner_bevfusion_config}:/opt/oneplanner/configs/perception/model.yaml"
       - "${defines.oneplanner_bevfusion_ckpt}:/opt/oneplanner/ckpts/bevfusion.pth"
+      # Planner normalization stats used by StateNormalizer/ObservationNormalizer.
+      # The image only copies scripts/ + src/, not configs/, so the patched
+      # model_loader (below) needs this JSON bind-mounted onto the expected path.
+      - "${defines.oneplanner_normalization_json}:/opt/oneplanner/configs/planner/normalization.json"
       - "${wizard.log_dir}:/mnt/output"
       # HOTFIX: cast has_speed_limit to bool before torch.where (upstream bug in
       # OnePlanner where map_tensors stores has_speed_limit as float32 but the
       # encoder expects a bool condition). Remove once fixed upstream.
-      - "/tmp/oneplanner_encoder_patched.py:/opt/oneplanner/src/oneplanner/models/planner/encoder.py"
+      - "${repo-relative:'src/wizard/patches/oneplanner/encoder.py'}:/opt/oneplanner/src/oneplanner/models/planner/encoder.py"
+      # HOTFIX: upstream deployment/model_loader.py defaults StateNormalizer +
+      # ObservationNormalizer to identity/empty because the checkpoint has no
+      # embedded "config" key. The model was trained with
+      # configs/planner/normalization.json (ego mean=[10,0,0,0], std=[20,20,1,1]),
+      # so identity normalizers at inference feed the DiT in the wrong scale and
+      # its predictions collapse to ~stationary. This patched loader loads the
+      # JSON that already ships in the image.
+      - "${repo-relative:'src/wizard/patches/oneplanner/model_loader.py'}:/opt/oneplanner/src/oneplanner/deployment/model_loader.py"
+      # HOTFIX: alpasim sends 20 route waypoints, but OnePlanner expects 500
+      # (NUM_SEGMENTS_IN_ROUTE=25 * POINTS_PER_LANELET=20). Without upsampling,
+      # only 1/25 route_lanes segments carries signal → model sees "no route"
+      # → predicts stationary. This patched preprocessing arc-length-interpolates
+      # 20 waypoints into 500 before segmenting. Remove once alpasim RouteGenerator
+      # is updated to emit denser waypoints (or once we route through the actual
+      # lanelet2 map for route_lanes construction).
+      - "${repo-relative:'src/wizard/patches/oneplanner/driver_preprocessing.py'}:/opt/oneplanner/src/oneplanner/deployment/driver_preprocessing.py"
     environments:
       - PYTHONUNBUFFERED=1
     command:

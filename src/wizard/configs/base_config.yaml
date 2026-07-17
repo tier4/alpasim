@@ -48,6 +48,12 @@ defines:
   # (e.g. ``oneplanner_phase2_gridbev_*``); optional otherwise.
   oneplanner_bevfusion_config: "${oc.env:HOME}/workspace/OnePlanner/configs/perception/model/lidar_30e_j6gen2_120m.yaml"
   oneplanner_bevfusion_ckpt: "${oc.env:HOME}/workspace/OnePlanner/ckpts/bevfusion_extracted.pth"
+  # Planner input/output normalization stats (see driver/oneplanner.yaml).
+  # Required at inference — StateNormalizer / ObservationNormalizer read this
+  # JSON to reproduce the training-time normalization (ego mean=[10,0,0,0],
+  # std=[20,20,1,1], etc.). The OnePlanner Dockerfile does not COPY configs/,
+  # so it must be bind-mounted from the host checkout.
+  oneplanner_normalization_json: "${oc.env:HOME}/workspace/OnePlanner/configs/planner/normalization.json"
 
   renderer_entrypoint: "/app/internal/scripts/pycena/runtime/pycena_nrm_full"
   nre_max_workers: 4
