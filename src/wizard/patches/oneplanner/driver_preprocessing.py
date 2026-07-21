@@ -14,6 +14,8 @@ contract whether the batch came from the training set or live alpasim.
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -26,6 +28,13 @@ from oneplanner.deployment.hdmap import (
     LaneletMap,
     build_map_tensors,
 )
+
+_ALIGN_DEBUG_LOG = logging.getLogger("oneplanner.deployment.align_debug")
+_ALIGN_DEBUG_LOG.setLevel(logging.INFO)
+_ALIGN_DEBUG_TICK = 0
+_ALIGN_DEBUG_EVERY_N = int(os.environ.get("ONEPLANNER_ALIGN_DEBUG_EVERY_N", "0") or 0)
+_SAMPLE_DUMP_DIR = os.environ.get("ONEPLANNER_SAMPLE_DUMP_DIR", "")
+_SAMPLE_DUMP_EVERY_N = int(os.environ.get("ONEPLANNER_SAMPLE_DUMP_EVERY_N", "0") or 0)
 
 
 @dataclass
@@ -382,6 +391,58 @@ def build_sample(
         lanes_has_sl = map_tensors["lanes_has_speed_limit"]
         polygons = map_tensors["polygons"]
         line_strings = map_tensors["line_strings"]
+
+        # Debug: verify alpasim's "local" frame matches OnePlanner's alignment "local".
+        # Root cause suspicion: rerun shows ego_history + prediction crossing road_borders,
+        # which implies road_border draws in a different frame than ego. Log the pieces so
+        # we can compare numerically. Print every N-th call (default off unless env set).
+        global _ALIGN_DEBUG_TICK
+        if _ALIGN_DEBUG_EVERY_N > 0 and _ALIGN_DEBUG_TICK % _ALIGN_DEBUG_EVERY_N == 0:
+            local_to_rig_mat = np.asarray(current.local_to_rig, dtype=np.float64)
+            ego_in_local = local_to_rig_mat[:3, 3]
+            _yaw_deg_local_to_rig = float(np.degrees(np.arctan2(local_to_rig_mat[1, 0], local_to_rig_mat[0, 0])))
+            _ALIGN_DEBUG_LOG.info(
+                "ALIGN_DEBUG tick=%d local_to_rig yaw_deg=%.3f rot=%s translation=%s",
+                _ALIGN_DEBUG_TICK, _yaw_deg_local_to_rig,
+                np.round(local_to_rig_mat[:3, :3], 4).tolist(),
+                np.round(local_to_rig_mat[:3, 3], 3).tolist(),
+            )
+            map_origin_in_local = np.asarray(alignment.local_to_map, dtype=np.float64)[:3, 3]
+            local_origin_in_map = np.asarray(alignment.map_to_local, dtype=np.float64)[:3, 3]
+            ep = np.asarray(ego_past, dtype=np.float64)
+            ep_xy_min = ep[..., :2].min(axis=tuple(range(ep.ndim - 1))).tolist()
+            ep_xy_max = ep[..., :2].max(axis=tuple(range(ep.ndim - 1))).tolist()
+            ls = np.asarray(line_strings, dtype=np.float64)
+            # first non-zero road_border point (any slot, any point) in ego-rig frame
+            mask = np.any(ls[..., :2] != 0, axis=-1)
+            if mask.any():
+                idx = np.argwhere(mask)[0]
+                first_ls_pt = ls[idx[0], idx[1], :2]
+                ls_xy_min = ls[..., :2][mask].min(axis=0)
+                ls_xy_max = ls[..., :2][mask].max(axis=0)
+            else:
+                first_ls_pt = np.zeros(2)
+                ls_xy_min = np.zeros(2)
+                ls_xy_max = np.zeros(2)
+            _ALIGN_DEBUG_LOG.info(
+                "ALIGN_DEBUG tick=%d ego_in_local=%s map_origin_in_local=%s "
+                "local_origin_in_map=%s dist_ego_to_map_origin_in_local=%.3fm "
+                "ego_past xy_range_in_rig=[%s .. %s] "
+                "line_strings first_pt_in_rig=%s xy_range_in_rig=[%s .. %s] "
+                "n_nonzero_pts=%d",
+                _ALIGN_DEBUG_TICK,
+                np.round(ego_in_local, 3).tolist(),
+                np.round(map_origin_in_local, 3).tolist(),
+                np.round(local_origin_in_map, 3).tolist(),
+                float(np.linalg.norm(ego_in_local - map_origin_in_local)),
+                [round(v, 3) for v in ep_xy_min],
+                [round(v, 3) for v in ep_xy_max],
+                np.round(first_ls_pt, 3).tolist(),
+                np.round(ls_xy_min, 3).tolist(),
+                np.round(ls_xy_max, 3).tolist(),
+                int(mask.sum()),
+            )
+        _ALIGN_DEBUG_TICK += 1
     else:
         lanes = np.zeros(
             (C.NUM_SEGMENTS_IN_LANE, C.POINTS_PER_LANELET, C.SEGMENT_POINT_DIM),
@@ -398,7 +459,7 @@ def build_sample(
     route_sl = np.zeros((C.NUM_SEGMENTS_IN_ROUTE, 1), dtype=np.float32)
     route_has_sl = np.zeros((C.NUM_SEGMENTS_IN_ROUTE, 1), dtype=np.float32)
 
-    return {
+    sample = {
         "ego_agent_past": ego_past,
         "ego_current_state": ego_now,
         "ego_agent_future": np.zeros((_FUTURE_LEN, 3), dtype=np.float32),
@@ -415,3 +476,18 @@ def build_sample(
         "goal_pose": goal,
         "points": points,
     }
+    if _SAMPLE_DUMP_DIR and _SAMPLE_DUMP_EVERY_N > 0:
+        # Save the sample dict as NPZ every Nth call so we can render offline
+        # with viz.py and compare with what appears in the .rrd file. Uses the
+        # module-level tick counter that ALIGN_DEBUG also increments upstream.
+        _tick_for_dump = _ALIGN_DEBUG_TICK - 1 if _ALIGN_DEBUG_TICK > 0 else 0
+        if _tick_for_dump % _SAMPLE_DUMP_EVERY_N == 0:
+            try:
+                dump_dir = _SAMPLE_DUMP_DIR
+                os.makedirs(dump_dir, exist_ok=True)
+                # NPZ-safe: cast non-numpy leaves to arrays as needed
+                out_path = os.path.join(dump_dir, f"sample_tick_{_tick_for_dump:06d}.npz")
+                np.savez(out_path, **{k: np.asarray(v) for k, v in sample.items()})
+            except Exception as exc:  # noqa: BLE001 — dumps must not break RPC
+                _ALIGN_DEBUG_LOG.warning("sample dump failed: %s", exc)
+    return sample

@@ -8,6 +8,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import numpy as np
+from utils_rs import Pose
+
 from alpasim_runtime.broadcaster import MessageBroadcaster
 from alpasim_runtime.events.base import Event, EventPriority, EventQueue
 from alpasim_runtime.events.camera import _traffic_trajectories
@@ -17,6 +20,17 @@ from alpasim_runtime.services.sensorsim_service import SensorsimService
 from alpasim_runtime.types import Clock, RuntimeLidar
 
 logger = logging.getLogger(__name__)
+
+# Roof-mounted PANDAR128 approximate rig→lidar transform for hyperion-class rigs.
+# The renderer (splatsim) treats sensor_pose as the sensor's world pose; without
+# this offset the LiDAR sits at rig origin (ground level) and downward rays hit
+# ground immediately, so OnePlanner sees an unusable point cloud and predicts
+# a stationary ego. TODO(closed-loop): source this from scene extrinsics rather
+# than hardcoding once the renderer exposes an AvailableLidars-style RPC.
+_RIG_TO_LIDAR_TOP = Pose(
+    np.array([0.5, 0.0, 1.9], dtype=np.float64),
+    np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
+)
 
 
 class LidarFrameEvent(Event):
@@ -59,7 +73,7 @@ class LidarFrameEvent(Event):
             traffic_trajectories=_traffic_trajectories(rollout_state),
             lidar_logical_id=self.lidar.logical_id,
             lidar_type=self.lidar.device_type,
-            sensor_pose_delta=None,
+            sensor_pose_delta=_RIG_TO_LIDAR_TOP,
             trigger=self.trigger,
             scene_id=rollout_state.unbound.scene_id,
         )
