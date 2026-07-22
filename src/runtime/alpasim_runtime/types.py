@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+import numpy as np
 from alpasim_grpc.v0.sensorsim_pb2 import LidarDeviceType
-
 from alpasim_runtime.config import RuntimeCameraConfig, RuntimeLidarConfig
+
+from utils_rs import Pose
 
 
 @dataclass
@@ -112,10 +114,19 @@ class RuntimeLidar:
     logical_id: str
     device_type: LidarDeviceType
     clock: Clock
+    rig_to_lidar: Pose = field(
+        default_factory=lambda: Pose(
+            np.zeros(3, dtype=np.float32),
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        )
+    )
 
     @classmethod
     def from_lidar_config(
-        cls, lidar_cfg: RuntimeLidarConfig, first_frame_end_us: int
+        cls,
+        lidar_cfg: RuntimeLidarConfig,
+        first_frame_end_us: int,
+        t_sensor_rig: np.ndarray | None = None,
     ) -> RuntimeLidar:
         """Build a ``RuntimeLidar`` from a scenario ``RuntimeLidarConfig``.
 
@@ -137,8 +148,18 @@ class RuntimeLidar:
             start_us=first_frame_end_us,
             first_end_us=first_frame_end_us,
         )
-        return cls(
-            logical_id=lidar_cfg.logical_id,
-            device_type=device_type,
-            clock=clock,
-        )
+        kwargs: dict = {
+            "logical_id": lidar_cfg.logical_id,
+            "device_type": device_type,
+            "clock": clock,
+        }
+        if t_sensor_rig is not None:
+            # USDZ stores rig→sensor (Autoware convention for LiDAR). Invert to
+            # get sensor-in-rig (the pose the renderer expects).
+            R = t_sensor_rig[:3, :3]
+            t = t_sensor_rig[:3, 3]
+            T_rig_to_lidar = np.eye(4, dtype=np.float32)
+            T_rig_to_lidar[:3, :3] = R.T
+            T_rig_to_lidar[:3, 3] = -R.T @ t
+            kwargs["rig_to_lidar"] = Pose.from_se3(T_rig_to_lidar)
+        return cls(**kwargs)

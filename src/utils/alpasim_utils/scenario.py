@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Self
 
 import csaps
@@ -85,6 +85,7 @@ class Rig:
     vehicle_config: (
         VehicleConfig | None
     )  # ego configuration if available in usdz checkpoint
+    lidar_calibrations: dict[str, np.ndarray] = field(default_factory=dict)
 
     @staticmethod
     def _parse_camera_frame_ranges(
@@ -207,6 +208,14 @@ class Rig:
             for uci in camera_calibrations
         }
 
+        lidar_calibrations_raw = rig_json.get("lidar_calibrations", {})
+        lidar_calibrations: dict[str, np.ndarray] = {}
+        for logical_id, entry in lidar_calibrations_raw.items():
+            t_sensor_rig = entry.get("T_sensor_rig")
+            if t_sensor_rig is None:
+                continue
+            lidar_calibrations[logical_id] = np.array(t_sensor_rig, dtype=np.float32)
+
         rigs = []
         for trajectory_idx, trajectory in enumerate(rig_json["rig_trajectories"]):
             sequence_id: str = trajectory["sequence_id"]
@@ -294,6 +303,7 @@ class Rig:
                     camera_frame_ranges_us=camera_frame_ranges_us,
                     world_to_nre=world_to_nre,
                     vehicle_config=vehicle_config,
+                    lidar_calibrations=lidar_calibrations,
                 )
             )
 

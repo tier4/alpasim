@@ -29,6 +29,7 @@ from alpasim_runtime.events.base import (
     SimulationEndEvent,
 )
 from alpasim_runtime.events.controller import ControllerEvent
+from alpasim_runtime.events.lidar import make_initial_lidar_render_events
 from alpasim_runtime.events.physics import PhysicsEvent, PhysicsTarget
 from alpasim_runtime.events.policy import PolicyEvent
 from alpasim_runtime.events.state import RolloutState, ServiceBundle, StepContext
@@ -51,7 +52,6 @@ from alpasim_runtime.services.session_configs import (
 )
 from alpasim_runtime.services.traffic_service import TrafficService
 from alpasim_runtime.telemetry.telemetry_context import try_get_context
-from alpasim_runtime.events.lidar import make_initial_lidar_render_events
 from alpasim_runtime.types import RuntimeCamera, RuntimeLidar
 from alpasim_runtime.unbound_rollout import UnboundRollout
 from alpasim_utils import geometry
@@ -480,10 +480,12 @@ class EventBasedRollout:
             # LiDAR sweeps use the render start (== first camera shutter close)
             # as their initial tick so cameras and LiDAR arrive at the driver
             # in the same simulated millisecond.
+            lidar_calibrations = self.data_source.rig.lidar_calibrations
             self.runtime_lidars = [
                 RuntimeLidar.from_lidar_config(
                     lidar_cfg,
                     first_frame_end_us=self.unbound.render_start_timestamp_us,
+                    t_sensor_rig=lidar_calibrations.get(lidar_cfg.logical_id),
                 )
                 for lidar_cfg in self.unbound.lidar_configs
             ]
