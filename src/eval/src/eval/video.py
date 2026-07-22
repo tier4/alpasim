@@ -411,28 +411,49 @@ def _render_lidar_overlay(
     time_us: int,
     point_size: float,
     max_points: int,
+    cache: dict,
 ) -> plt.Artist | None:
-    """Project a LiDAR sweep onto the camera axes, colored by forward depth."""
+    """Project a LiDAR sweep onto the camera axes, colored by forward depth.
+
+    Reuses a single scatter artist across frames via ``cache["scatter"]`` so
+    that ``fig.savefig``-based mp4 encoding (which doesn't honor ``blit``)
+    doesn't accumulate every frame's points on the canvas.
+    """
+    scatter = cache.get("scatter")
+
+    def _hide_and_return() -> plt.Artist | None:
+        if scatter is None:
+            return None
+        scatter.set_offsets(np.empty((0, 2)))
+        return scatter
+
     points_rig = lidar.points_at_time(time_us)
     if points_rig is None or points_rig.size == 0:
-        return None
+        return _hide_and_return()
     if max_points > 0 and points_rig.shape[0] > max_points:
         stride = points_rig.shape[0] // max_points
         points_rig = points_rig[::stride]
     pixels, mask = camera_projector.project_points(points_rig)
     if pixels.shape[0] == 0:
-        return None
+        return _hide_and_return()
     depths = points_rig[mask, 0]
-    return ax.scatter(
-        pixels[:, 0],
-        pixels[:, 1],
-        c=depths,
-        cmap="turbo",
-        s=point_size,
-        vmin=1.0,
-        vmax=60.0,
-        linewidths=0,
-    )
+
+    if scatter is None:
+        scatter = ax.scatter(
+            pixels[:, 0],
+            pixels[:, 1],
+            c=depths,
+            cmap="turbo",
+            s=point_size,
+            vmin=1.0,
+            vmax=60.0,
+            linewidths=0,
+        )
+        cache["scatter"] = scatter
+    else:
+        scatter.set_offsets(pixels)
+        scatter.set_array(depths)
+    return scatter
 
 
 def create_video_animation(
@@ -664,6 +685,8 @@ def create_video_animation(
     for artist in _list_in_dict_in_dict_to_list(artists_on_map):
         artist.set_transform(ego_transform + axs["map"].transData)
 
+    lidar_overlay_cache: dict = {}
+
     def update(time: int) -> list[plt.Artist]:
         if should_render_table:
             update_table(table, processed_metrics_dfs, time)
@@ -767,6 +790,7 @@ def create_video_animation(
                 time,
                 cfg.video.lidar_overlay_point_size,
                 cfg.video.lidar_overlay_max_points,
+                lidar_overlay_cache,
             )
             if lidar_artist is not None:
                 overlay_artists.append(lidar_artist)
