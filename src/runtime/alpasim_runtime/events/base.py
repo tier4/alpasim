@@ -29,6 +29,7 @@ class EventPriority:
     ===  ==================  ==========================================
     10   CameraFrameEvent     Render/register camera frames
     11   CameraRenderFlushEvent Render grouped camera frames
+    12   LidarFrameEvent      Render/submit LiDAR point clouds
     20   PolicyEvent          Gather observations, query driver
     30   SimulationEndEvent   Terminate loop (final timestamp only)
     40   ControllerEvent      Run controller + vehicle model
@@ -41,6 +42,7 @@ class EventPriority:
 
     CAMERA = 10
     CAMERA_FLUSH = 11
+    LIDAR = 12
     POLICY = 20
     SIMULATION_END = 30
     CONTROLLER = 40

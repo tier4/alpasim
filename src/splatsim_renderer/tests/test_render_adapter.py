@@ -76,8 +76,8 @@ def test_pose_identity_yields_translation_only_viewmat():
         quat=common_pb2.Quat(w=1.0, x=0.0, y=0.0, z=0.0),
     )
     viewmat = pose_to_viewmat(pose)
-    # camera at (1, 2, 3) with identity rotation -> world->cam translation is
-    # -(1, 2, 3).
+    # Both alpasim's ENU world and splatsim's tile-local frame are Z-up, so an
+    # identity pose yields an identity R and viewmat[:3,3] = -t.
     np.testing.assert_allclose(viewmat[:3, :3], np.eye(3, dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(viewmat[:3, 3], np.array([-1.0, -2.0, -3.0]), atol=1e-6)
     np.testing.assert_allclose(viewmat[3], [0, 0, 0, 1], atol=1e-6)
@@ -164,7 +164,7 @@ def test_encode_image_undefined_format_defaults_to_png():
 
 
 def test_identity_quat_takes_fast_path():
-    """Identity quaternion should yield exactly the 3x3 identity matrix."""
+    """Identity quaternion should hit the fast path and yield identity R."""
     pose = common_pb2.Pose(
         vec=common_pb2.Vec3(),
         quat=common_pb2.Quat(w=1.0),
@@ -174,11 +174,7 @@ def test_identity_quat_takes_fast_path():
 
 
 def test_world_origin_offset_shifts_camera_position():
-    """``world_origin`` shifts the camera's world position before inversion.
-
-    Camera at world (10, 20, 30) with world_origin (10, 20, 30) should end up
-    at the tile-local origin, i.e. viewmat translation = 0.
-    """
+    """``world_origin`` (in tile-local) zeroes the recentered translation."""
     from alpasim_splatsim_renderer.render_adapter import pose_to_viewmat
 
     pose = common_pb2.Pose(

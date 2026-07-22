@@ -1,0 +1,93 @@
+# @package _global_
+#
+# OnePlanner-backed driver. Runs the tier4/OnePlanner driver server
+# (``oneplanner.deployment.driver_server``) which speaks the alpasim
+# ``EgoDriver`` gRPC interface directly. See
+# https://github.com/tier4/OnePlanner/pull/112.
+#
+# Unlike vavam/alpamayo which configure alpasim's own driver service via the
+# ``driver:`` block, this file overrides ``services.driver`` wholesale to
+# point at the OnePlanner container. Pattern mirrors ``renderer/splatsim.yaml``.
+#
+# The image is expected to be pre-built locally (``docker build -t
+# oneplanner:local .`` inside a checkout of tier4/OnePlanner). At the time of
+# writing PR #112 has no published ghcr.io tag.
+#
+# Usage:
+#   uv run alpasim_wizard ... \
+#     driver=oneplanner renderer=splatsim \
+#     defines.oneplanner_ckpt=/path/to/e2e_planner.ckpt
+
+# Presence marker so ``setup_omegaconf._is_missing_or_empty(cfg, "driver")``
+# doesn't reject the run. The alpasim driver service is fully replaced by the
+# OnePlanner container defined below, so the fields under ``driver:`` are not
+# consumed by anything at runtime.
+driver:
+  model:
+    model_type: oneplanner
+
+# OnePlanner is a LiDAR-based E2E planner: without a point-cloud observation
+# it emits ~zero-motion trajectories. Wire up one PANDAR128 sweep at 10 Hz so
+# the runtime forwards point clouds into ``submit_lidar_observation``.
+runtime:
+  simulation_config:
+    lidars:
+      - logical_id: lidar_top
+        device_type: PANDAR128
+        frame_interval_us: 100_000
+
+services:
+  driver:
+    image: oneplanner:local
+    external_image: true
+    volumes:
+      # Checkpoint: image's default CMD reads /opt/oneplanner/ckpts/e2e_planner.pth,
+      # so bind-mount the host .ckpt straight onto that path.
+      - "${defines.oneplanner_ckpt}:/opt/oneplanner/ckpts/e2e_planner.pth"
+      # Scene USDZ (shared with the splatsim renderer). driver_server.py
+      # requires --scene-usdz to build its HD-map tensors from the embedded
+      # lanelet2 asset.
+      - "${defines.splatsim_scene_usdz}:/mnt/oneplanner/scene.usdz"
+      # BEVFusion perception config + checkpoint. The image copies scripts/
+      # (train_bevfusion.py owns build_bevfusion_from_config) but not configs/,
+      # so both files are supplied via bind-mounts. Skip these mounts and the
+      # matching --bevfusion-* flags for planner-only smoke tests.
+      - "${defines.oneplanner_bevfusion_config}:/opt/oneplanner/configs/perception/model.yaml"
+      - "${defines.oneplanner_bevfusion_ckpt}:/opt/oneplanner/ckpts/bevfusion.pth"
+      # Planner normalization stats used by StateNormalizer/ObservationNormalizer.
+      # The image only copies scripts/ + src/, not configs/, so the patched
+      # model_loader (below) needs this JSON bind-mounted onto the expected path.
+      - "${defines.oneplanner_normalization_json}:/opt/oneplanner/configs/planner/normalization.json"
+      - "${wizard.log_dir}:/mnt/output"
+      # HOTFIX: cast has_speed_limit to bool before torch.where (upstream bug in
+      # OnePlanner where map_tensors stores has_speed_limit as float32 but the
+      # encoder expects a bool condition). Remove once fixed upstream.
+      - "${repo-relative:'src/wizard/patches/oneplanner/encoder.py'}:/opt/oneplanner/src/oneplanner/models/planner/encoder.py"
+      # HOTFIX: upstream deployment/model_loader.py defaults StateNormalizer +
+      # ObservationNormalizer to identity/empty because the checkpoint has no
+      # embedded "config" key. The model was trained with
+      # configs/planner/normalization.json (ego mean=[10,0,0,0], std=[20,20,1,1]),
+      # so identity normalizers at inference feed the DiT in the wrong scale and
+      # its predictions collapse to ~stationary. This patched loader loads the
+      # JSON that already ships in the image.
+      - "${repo-relative:'src/wizard/patches/oneplanner/model_loader.py'}:/opt/oneplanner/src/oneplanner/deployment/model_loader.py"
+      # HOTFIX: alpasim sends 20 route waypoints, but OnePlanner expects 500
+      # (NUM_SEGMENTS_IN_ROUTE=25 * POINTS_PER_LANELET=20). Without upsampling,
+      # only 1/25 route_lanes segments carries signal → model sees "no route"
+      # → predicts stationary. This patched preprocessing arc-length-interpolates
+      # 20 waypoints into 500 before segmenting. Remove once alpasim RouteGenerator
+      # is updated to emit denser waypoints (or once we route through the actual
+      # lanelet2 map for route_lanes construction).
+      - "${repo-relative:'src/wizard/patches/oneplanner/driver_preprocessing.py'}:/opt/oneplanner/src/oneplanner/deployment/driver_preprocessing.py"
+    environments:
+      - PYTHONUNBUFFERED=1
+    command:
+      - "python -m oneplanner.deployment.driver_server"
+      - "--planner-ckpt=/opt/oneplanner/ckpts/e2e_planner.pth"
+      - "--bevfusion-config=/opt/oneplanner/configs/perception/model.yaml"
+      - "--bevfusion-ckpt=/opt/oneplanner/ckpts/bevfusion.pth"
+      - "--scene-usdz=/mnt/oneplanner/scene.usdz"
+      - "--host=0.0.0.0"
+      - "--port={port}"
+      - "--device=cuda"
+      - "--log-level=${wizard.log_level}"

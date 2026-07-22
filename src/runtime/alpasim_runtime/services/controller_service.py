@@ -42,6 +42,35 @@ class PropagatedPosesAtTime:
     dynamic_state_estimated: DynamicState  # The estimated dynamic state
 
 
+def _dynamic_state_from_trajectory(
+    trajectory: Trajectory, at_us: int, dt_us: int = 100_000
+) -> DynamicState:
+    # Without this, drivers see zero velocity during force-GT warmup and predict
+    # a stationary ego, which then bleeds into closed-loop and stops the car.
+    tr = trajectory.time_range_us
+    half = dt_us // 2
+    start = max(int(tr.start), int(at_us) - half)
+    end = min(int(tr.stop) - 1, int(at_us) + half)
+    if end <= start:
+        return DynamicState()
+    delta = trajectory.interpolate_delta(start, end)
+    dt_s = (end - start) * 1e-6
+    v = np.asarray(delta.vec3, dtype=np.float64) / dt_s
+    q = np.asarray(delta.quat, dtype=np.float64)  # scipy [x, y, z, w]
+    xyz, w_c = q[:3], float(q[3])
+    sin_half = float(np.linalg.norm(xyz))
+    if sin_half < 1e-9:
+        omega = np.zeros(3, dtype=np.float64)
+    else:
+        omega = (xyz / sin_half) * (2.0 * np.arctan2(sin_half, w_c) / dt_s)
+    return DynamicState(
+        linear_velocity=Vec3(x=float(v[0]), y=float(v[1]), z=float(v[2])),
+        angular_velocity=Vec3(
+            x=float(omega[0]), y=float(omega[1]), z=float(omega[2])
+        ),
+    )
+
+
 class ControllerService(ServiceBase[VDCServiceStub]):
     """
     Controller service implementation that handles both real and skip modes.
@@ -169,8 +198,12 @@ class ControllerService(ServiceBase[VDCServiceStub]):
                     timestamp_us=t,
                     pose_local_to_rig=pose,
                     pose_local_to_rig_estimate=pose,
-                    dynamic_state=DynamicState(),
-                    dynamic_state_estimated=DynamicState(),
+                    dynamic_state=_dynamic_state_from_trajectory(
+                        fallback_trajectory_local_to_rig, int(t)
+                    ),
+                    dynamic_state_estimated=_dynamic_state_from_trajectory(
+                        fallback_trajectory_local_to_rig, int(t)
+                    ),
                 )
                 for t, pose in zip(expected_intermediate_timestamps, poses, strict=True)
             ]
@@ -221,13 +254,16 @@ class ControllerService(ServiceBase[VDCServiceStub]):
             fallback_pose_local_to_rig = (
                 fallback_trajectory_local_to_rig.interpolate_pose(future_us)
             )
+            fallback_dyn = _dynamic_state_from_trajectory(
+                fallback_trajectory_local_to_rig, future_us
+            )
             result = [
                 PropagatedPosesAtTime(
                     timestamp_us=future_us,
                     pose_local_to_rig=fallback_pose_local_to_rig,
                     pose_local_to_rig_estimate=fallback_pose_local_to_rig,
-                    dynamic_state=DynamicState(),
-                    dynamic_state_estimated=DynamicState(),
+                    dynamic_state=fallback_dyn,
+                    dynamic_state_estimated=fallback_dyn,
                 )
             ]
             return self._ensure_intermediates(
@@ -267,13 +303,16 @@ class ControllerService(ServiceBase[VDCServiceStub]):
             fallback_pose_local_to_rig = (
                 fallback_trajectory_local_to_rig.interpolate_pose(future_us)
             )
+            fallback_dyn = _dynamic_state_from_trajectory(
+                fallback_trajectory_local_to_rig, future_us
+            )
             result = [
                 PropagatedPosesAtTime(
                     timestamp_us=future_us,
                     pose_local_to_rig=fallback_pose_local_to_rig,
                     pose_local_to_rig_estimate=fallback_pose_local_to_rig,
-                    dynamic_state=DynamicState(),
-                    dynamic_state_estimated=DynamicState(),
+                    dynamic_state=fallback_dyn,
+                    dynamic_state_estimated=fallback_dyn,
                 )
             ]
         elif response.states:

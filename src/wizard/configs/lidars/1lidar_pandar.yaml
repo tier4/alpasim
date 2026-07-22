@@ -1,0 +1,10 @@
+# @package _global_
+
+# Enable a single PANDAR128 LiDAR at 10 Hz. Required by LiDAR-based drivers
+# (e.g. OnePlanner); camera-only drivers should leave `lidars` empty.
+runtime:
+  simulation_config:
+    lidars:
+      - logical_id: lidar_top
+        device_type: PANDAR128
+        frame_interval_us: 100_000

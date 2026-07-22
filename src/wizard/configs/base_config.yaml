@@ -36,6 +36,24 @@ defines:
   sensordata: "${defines.filesystem}/nre-artifacts"
   trafficsim_map_cache: "${defines.filesystem}/trafficsim/unified_data_cache"
   splatsim_scene_usdz: "${defines.filesystem}/splatsim/scene.usdz"
+  # OnePlanner driver checkpoint (see driver/oneplanner.yaml). Points at the
+  # E2E planner .ckpt on the host; mounted read-only at
+  # /opt/oneplanner/ckpts/e2e_planner.pth inside the container.
+  oneplanner_ckpt: "${oc.env:HOME}/Downloads/oneplanner_phase2_gridbev_last.ckpt"
+  # BEVFusion perception config + checkpoint (see driver/oneplanner.yaml).
+  # driver_server.py's ``_build_perception`` reads the YAML (mmcv BEVFusion
+  # topology) and the .pth (mmcv-format state_dict) to build the LiDAR
+  # perception front-end that feeds ``_bev_feature_map`` into the planner.
+  # Required for checkpoints trained with ``use_grid_sample_bev=True``
+  # (e.g. ``oneplanner_phase2_gridbev_*``); optional otherwise.
+  oneplanner_bevfusion_config: "${oc.env:HOME}/workspace/OnePlanner/configs/perception/model/lidar_30e_j6gen2_120m.yaml"
+  oneplanner_bevfusion_ckpt: "${oc.env:HOME}/workspace/OnePlanner/ckpts/bevfusion_extracted.pth"
+  # Planner input/output normalization stats (see driver/oneplanner.yaml).
+  # Required at inference — StateNormalizer / ObservationNormalizer read this
+  # JSON to reproduce the training-time normalization (ego mean=[10,0,0,0],
+  # std=[20,20,1,1], etc.). The OnePlanner Dockerfile does not COPY configs/,
+  # so it must be bind-mounted from the host checkout.
+  oneplanner_normalization_json: "${oc.env:HOME}/workspace/OnePlanner/configs/planner/normalization.json"
 
   renderer_entrypoint: "/app/internal/scripts/pycena/runtime/pycena_nrm_full"
   nre_max_workers: 4
@@ -297,6 +315,12 @@ runtime:
 
     route_generator_type: "MAP" # "MAP" or "RECORDED"
     route_start_offset_m: 0.0 # Along-route distance ahead of ego where submitted routes start
+
+    # Skip the first N microseconds of the recorded trajectory before starting the rollout.
+    # 0 = play from the very first recorded timestamp. Useful when the beginning of the
+    # recording is uninteresting, or to supply enough ego-history context for drivers like
+    # OnePlanner that condition on past motion.
+    trajectory_start_us_offset: 0
 
     vehicle: null # use values from the .usdz file (original dimensions)
 

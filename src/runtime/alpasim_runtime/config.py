@@ -176,6 +176,21 @@ class RuntimeCameraConfig:
 
 
 @dataclass
+class RuntimeLidarConfig:
+    """Configuration for a LiDAR in the runtime. See `RuntimeLidar` for more details.
+
+    ``device_type`` names one of the sensorsim ``LidarDeviceType`` enum members
+    (e.g. ``"PANDAR128"`` or ``"AT128"``). It is stored as a string so the
+    config file stays free of gRPC-generated enum imports; the runtime maps it
+    to the enum when the ``RuntimeLidar`` is built.
+    """
+
+    logical_id: str = "lidar_top"
+    device_type: str = "PANDAR128"
+    frame_interval_us: int = 100_000  # 10 Hz
+
+
+@dataclass
 class PoseConfig:
     translation_m: tuple[float, float, float]
     rotation_xyzw: tuple[float, float, float, float]
@@ -300,6 +315,10 @@ class SimulationConfig:
         default_factory=lambda: [RuntimeCameraConfig()]
     )
 
+    # LiDARs are opt-in — drivers that need point clouds (e.g. OnePlanner)
+    # populate this list; camera-only drivers leave it empty.
+    lidars: list[RuntimeLidarConfig] = field(default_factory=list)
+
     # if None, the data will be pulled from the .usdz file
     vehicle: VehicleConfig | None = None
 
@@ -314,6 +333,14 @@ class SimulationConfig:
 
     route_generator_type: RouteGeneratorType = RouteGeneratorType.MAP
     route_start_offset_m: float = 0.0
+
+    # Skip the first N microseconds of the recorded trajectory before starting
+    # the rollout. 0 (default) reproduces the historical behavior of playing
+    # from the very first recorded timestamp. Useful when the beginning of the
+    # recording is uninteresting (parked/idle), or to supply enough
+    # ego-history context for drivers like OnePlanner that condition on past
+    # motion.
+    trajectory_start_us_offset: int = 0
 
     # Whether to send optional messages to the driver
     send_recording_ground_truth: bool = False

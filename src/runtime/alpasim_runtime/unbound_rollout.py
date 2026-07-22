@@ -17,6 +17,7 @@ from alpasim_runtime.config import (
     RenderBundling,
     RouteGeneratorType,
     RuntimeCameraConfig,
+    RuntimeLidarConfig,
     SimulationConfig,
     VehicleConfig,
 )
@@ -71,19 +72,34 @@ def _build_rollout_timing(
     renderer_service: RendererService,
 ) -> RolloutTiming:
     camera_logical_ids = [camera_cfg.logical_id for camera_cfg in camera_configs]
-    egomotion_context_start_us = data_source.rig.trajectory.time_range_us.start
+    trajectory_range_us = data_source.rig.trajectory.time_range_us
+    offset_us = simulation_config.trajectory_start_us_offset
+    if offset_us < 0:
+        raise ValueError(
+            f"trajectory_start_us_offset must be non-negative, got {offset_us}"
+        )
+    if offset_us >= (trajectory_range_us.stop - trajectory_range_us.start):
+        raise ValueError(
+            f"trajectory_start_us_offset={offset_us} is past the recording "
+            f"duration ({trajectory_range_us.stop - trajectory_range_us.start} us)"
+        )
+    egomotion_context_start_us = trajectory_range_us.start + offset_us
 
     # ``first_camera_frame_end_us`` raises through ``first_camera_frame_ranges_us``
-    # when no cameras are configured.  Headless rollouts fall back to the GT
-    # trajectory start as the render anchor.
+    # when no cameras are configured.  Headless rollouts fall back to the
+    # (shifted) GT trajectory start as the render anchor.
     if camera_logical_ids:
         first_camera_frame_ranges_us = data_source.rig.first_camera_frame_ranges_us(
-            camera_logical_ids
+            camera_logical_ids,
+            min_frame_end_us=egomotion_context_start_us,
         )
-        render_start_us = data_source.rig.first_camera_frame_end_us(camera_logical_ids)
+        render_start_us = data_source.rig.first_camera_frame_end_us(
+            camera_logical_ids,
+            min_frame_end_us=egomotion_context_start_us,
+        )
     else:
         first_camera_frame_ranges_us = {}
-        render_start_us = data_source.rig.trajectory.time_range_us.start
+        render_start_us = egomotion_context_start_us
 
     if simulation_config.assert_zero_decision_delay and camera_configs:
         for camera_cfg in camera_configs:
@@ -176,6 +192,7 @@ class UnboundRollout:
     pose_reporting_interval_us: int
     camera_configs: list[RuntimeCameraConfig]
     first_camera_frame_ranges_us: dict[str, range]
+    lidar_configs: list[RuntimeLidarConfig]
     force_gt_period: range
     image_format: ImageFormat
     ego_mask_rig_config_id: str
@@ -212,6 +229,7 @@ class UnboundRollout:
     ) -> UnboundRollout:
         """Create UnboundRollout from SceneDataSource."""
         camera_configs = list(simulation_config.cameras)
+        lidar_configs = list(simulation_config.lidars)
         renderer_service.validate_timing_alignment(simulation_config)
         timing = _build_rollout_timing(
             simulation_config,
@@ -293,6 +311,7 @@ class UnboundRollout:
             version_ids=version_ids,
             camera_configs=camera_configs,
             first_camera_frame_ranges_us=timing.first_camera_frame_ranges_us,
+            lidar_configs=lidar_configs,
             force_gt_period=force_gt_period,
             physics_update_mode=simulation_config.physics_update_mode,
             image_format={"jpeg": ImageFormat.JPEG, "png": ImageFormat.PNG}[

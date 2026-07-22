@@ -28,6 +28,7 @@ def test_initial_event_schedule_uses_policy_and_end_timestamps() -> None:
         send_recording_ground_truth=False,
     )
     rollout.runtime_cameras = []
+    rollout.runtime_lidars = []
     rollout.driver = MagicMock()
     rollout.controller = MagicMock()
     rollout.physics = MagicMock()

@@ -110,6 +110,25 @@ def _quat_to_rotation_matrix(qw: float, qx: float, qy: float, qz: float) -> np.n
     )
 
 
+def _pose_to_tile_local(
+    pose,
+    world_origin: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (R, t) of a camera-in-world pose expressed in tile-local frame.
+
+    Both alpasim's world (ROS ENU) and splatsim's tile-local frame are
+    right-handed Z-up (Cesium 3D Tiles standard, confirmed by the
+    ``up_axis: "z"`` entry in the USDZ scene.json), so the pose orientation
+    is used as-is. Only the translation is recentered by ``world_origin``
+    (typically ``Background.tile_local_centroid``).
+    """
+    R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
+    t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
+    if world_origin is not None:
+        t = t - np.asarray(world_origin, dtype=np.float32)
+    return R, t
+
+
 def pose_to_viewmat(pose, world_origin: np.ndarray | None = None) -> np.ndarray:
     """Convert a common.Pose (camera-in-world) to a 4x4 world->camera viewmat.
 
@@ -118,15 +137,12 @@ def pose_to_viewmat(pose, world_origin: np.ndarray | None = None) -> np.ndarray:
     splatsim's `Renderer.render` wants the inverse — world-to-camera. The
     inverse of a rigid transform ``[R | t]`` is ``[R^T | -R^T t]``.
 
-    ``world_origin`` is subtracted from the position before inversion so
-    that world-frame poses land in splatsim's tile-local frame (the frame
-    ``Renderer.render`` actually operates in). Pass ``Background.tile_local_centroid``
+    The pose is first rotated from alpasim's Z-up ENU world into splatsim's
+    Y-up tile-local frame, then ``world_origin`` is subtracted so world-frame
+    poses land at the tile centroid. Pass ``Background.tile_local_centroid``
     from the loaded scene here.
     """
-    R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
-    t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
-    if world_origin is not None:
-        t = t - np.asarray(world_origin, dtype=np.float32)
+    R, t = _pose_to_tile_local(pose, world_origin)
     viewmat = np.eye(4, dtype=np.float32)
     viewmat[:3, :3] = R.T
     viewmat[:3, 3] = -R.T @ t
@@ -149,12 +165,10 @@ def pose_to_sensor_to_world(
 
     Used by the LiDAR path (splatsim's ``LidarRenderer.render`` takes
     ``sensor_to_world`` directly, not its inverse). Applies the same
-    ``world_origin`` offset as :func:`pose_to_viewmat`.
+    Z-up ENU → Y-up tile-local rotation and ``world_origin`` offset as
+    :func:`pose_to_viewmat`.
     """
-    R = _quat_to_rotation_matrix(pose.quat.w, pose.quat.x, pose.quat.y, pose.quat.z)
-    t = np.array([pose.vec.x, pose.vec.y, pose.vec.z], dtype=np.float32)
-    if world_origin is not None:
-        t = t - np.asarray(world_origin, dtype=np.float32)
+    R, t = _pose_to_tile_local(pose, world_origin)
     m = np.eye(4, dtype=np.float32)
     m[:3, :3] = R
     m[:3, 3] = t
