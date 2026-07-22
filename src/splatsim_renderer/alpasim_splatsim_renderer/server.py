@@ -154,6 +154,76 @@ def _build_available_cameras_from_usdz(
     return cameras
 
 
+def _load_lidar_sensor_to_rig_from_usdz(
+    usdz_path: Optional[Path],
+    logical_id: str = "lidar_top",
+) -> Optional["np.ndarray"]:
+    """Return ``inv(T_sensor_rig[logical_id])`` (sensor→rig) from the USDZ.
+
+    Splatsim's ``LidarRenderer`` emits points in its own local ENU sensor
+    frame (+x forward, +y left, +z up). alpasim's sensorsim RPC contract
+    expects rig-frame points (see ``Lidar.add_point_cloud`` in
+    ``src/eval/src/eval/data.py``). This helper returns the transform used
+    to rotate/translate splatsim output into rig frame; ``_do_render_lidar``
+    applies it before returning.
+
+    Returns ``None`` if the USDZ is missing, has no matching lidar entry,
+    or fails to parse — callers should treat the transform as identity in
+    that case so behavior falls back to the pre-fix contract.
+    """
+    if usdz_path is None:
+        return None
+
+    import json
+    import zipfile
+
+    import numpy as np
+
+    try:
+        with zipfile.ZipFile(str(usdz_path)) as zf:
+            with zf.open("rig_trajectories.json") as f:
+                doc = json.load(f)
+    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Could not read lidar_calibrations from %s: %s", usdz_path, exc
+        )
+        return None
+
+    calibrations = doc.get("lidar_calibrations") or {}
+    entry = calibrations.get(logical_id)
+    if entry is None:
+        logger.warning(
+            "USDZ %s has no lidar_calibrations[%r]; lidar output will not be "
+            "converted to rig frame (points will remain in splatsim sensor "
+            "frame — expect misalignment).",
+            usdz_path,
+            logical_id,
+        )
+        return None
+
+    try:
+        t_sensor_rig = np.asarray(entry["T_sensor_rig"], dtype=np.float64)
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.warning("Could not parse T_sensor_rig for lidar %s: %s", logical_id, exc)
+        return None
+
+    if t_sensor_rig.shape != (4, 4):
+        logger.warning(
+            "T_sensor_rig for lidar %s has unexpected shape %s",
+            logical_id,
+            t_sensor_rig.shape,
+        )
+        return None
+
+    sensor_to_rig = np.linalg.inv(t_sensor_rig)
+    logger.info(
+        "Loaded lidar %s sensor→rig transform: t=%s",
+        logical_id,
+        sensor_to_rig[:3, 3].tolist(),
+    )
+    return sensor_to_rig
+
+
 class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
     """Splatsim-backed implementation of SensorsimService."""
 
@@ -168,6 +238,7 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         # mismatches so misconfigured Runtime requests are visible.
         self._scene_id = scene_id
         self._available_cameras = _build_available_cameras_from_usdz(usdz_path)
+        self._lidar_sensor_to_rig = _load_lidar_sensor_to_rig_from_usdz(usdz_path)
 
     # ----- rendering (internal, raise on error) -----
 
@@ -254,6 +325,13 @@ class SplatsimSensorsimServicer(sensorsim_pb2_grpc.SensorsimServiceServicer):
         xyz, intensity, ring_ids = render_lidar_panorama_from_scene(
             self._scene, base_to_world, device_type
         )
+        # Splatsim emits points in its ENU sensor-local frame (+x forward,
+        # +y left, +z up). Rotate/translate into rig frame so the RPC
+        # contract matches alpasim's expectation.
+        if self._lidar_sensor_to_rig is not None and xyz.shape[0] > 0:
+            R = self._lidar_sensor_to_rig[:3, :3].astype(xyz.dtype, copy=False)
+            t = self._lidar_sensor_to_rig[:3, 3].astype(xyz.dtype, copy=False)
+            xyz = xyz @ R.T + t
         # ring_ids on the wire are packed little-endian uint16.
         ring_ids_u16 = ring_ids.astype("<u2", copy=False)
         return sensorsim_pb2.LidarRenderReturn(
